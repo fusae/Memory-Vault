@@ -79,6 +79,20 @@ describe('CLI commands', () => {
     exitSpy.mockRestore();
   });
 
+  it('should search memories', async () => {
+    const { addMemory, searchMemories } = await import('../src/cli-commands.js');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await addMemory('I love functional programming', { type: 'preference' });
+    await addMemory('Project uses React', { type: 'project' });
+    logSpy.mockClear();
+
+    await searchMemories('functional', {});
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('functional programming'));
+
+    logSpy.mockRestore();
+  });
+
   it('should export as JSON', async () => {
     const { addMemory, exportMemories } = await import('../src/cli-commands.js');
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
