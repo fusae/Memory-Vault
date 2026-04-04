@@ -246,6 +246,49 @@ ${conversation}`,
   })
 );
 
+// ─── Prompt: memory_review (记忆审阅) ───
+server.registerPrompt(
+  'memory_review',
+  {
+    title: 'Review Recent Memories',
+    description: '审阅最近存储的记忆，确认、修改或删除不准确的条目。',
+    argsSchema: {
+      days: z.number().optional().describe('审阅最近多少天的记忆，默认 7 天'),
+    },
+  },
+  async ({ days }) => {
+    const allMemories = store.list();
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - (days ?? 7));
+    const recent = allMemories.filter(m => new Date(m.created_at) >= cutoff);
+
+    const memoriesList = recent.length > 0
+      ? recent.map(m =>
+          `- [${m.id}] (${m.type}) ${m.content}${m.tags.length ? ` [${m.tags.join(', ')}]` : ''}${m.project ? ` (project: ${m.project})` : ''} — confidence: ${m.confidence}`
+        ).join('\n')
+      : '（最近没有新增记忆）';
+
+    return {
+      messages: [
+        {
+          role: 'user' as const,
+          content: {
+            type: 'text' as const,
+            text: `请帮我审阅最近 ${days ?? 7} 天的记忆。对于每条记忆，请判断是否准确，并建议保留、修改或删除。
+
+如需修改，请调用 memory_update 工具。
+如需删除，请调用 memory_delete 工具。
+
+以下是最近的记忆条目：
+
+${memoriesList}`,
+          },
+        },
+      ],
+    };
+  }
+);
+
 // ─── 启动 ───
 if (process.env.NODE_ENV !== 'test') {
   const transport = new StdioServerTransport();
