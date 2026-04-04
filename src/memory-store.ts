@@ -1,0 +1,167 @@
+import { randomUUID } from 'node:crypto';
+import { createDatabase, getDatabase } from './db.js';
+import { getEmbedding } from './embedding.js';
+import type {
+  MemoryEntry,
+  MemorySearchResult,
+  CreateMemoryInput,
+  SearchMemoryInput,
+  UpdateMemoryInput,
+} from './types.js';
+
+export class MemoryStore {
+  constructor(dbPath: string) {
+    createDatabase(dbPath);
+  }
+
+  async write(input: CreateMemoryInput): Promise<MemoryEntry> {
+    const db = getDatabase();
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    const tags = JSON.stringify(input.tags ?? []);
+
+    const embedding = await getEmbedding(input.content);
+    const vecBuffer = Buffer.from(new Float32Array(embedding).buffer);
+
+    db.prepare(`
+      INSERT INTO memories (id, type, content, tags, project, confidence, source_tool, source_excerpt, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+    `).run(id, input.type, input.content, tags, input.project ?? null,
+           input.confidence ?? 0.8, input.source_tool ?? null,
+           input.source_excerpt ?? null, now, now);
+
+    // vec_memories 的 rowid 需要是整数，用 memories 表的 rowid
+    const row = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number | bigint };
+    db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(row.rowid), vecBuffer);
+
+    return this.get(id)!;
+  }
+
+  async search(input: SearchMemoryInput): Promise<MemorySearchResult[]> {
+    const db = getDatabase();
+    const limit = input.limit ?? 10;
+
+    const queryEmbedding = await getEmbedding(input.query);
+    const vecBuffer = Buffer.from(new Float32Array(queryEmbedding).buffer);
+
+    // vec0 KNN 查询要求 k = ? 在 WHERE 子句里，不能用外层 LIMIT 替代
+    const hasFilters = !!(input.type || input.project);
+    const k = hasFilters ? limit * 3 : limit;
+
+    let sql = `
+      SELECT m.*, sub.distance
+      FROM (
+        SELECT rowid, distance FROM vec_memories
+        WHERE embedding MATCH ? AND k = ${k}
+      ) sub
+      INNER JOIN memories m ON m.rowid = sub.rowid
+      WHERE m.status = 'active'
+    `;
+    const params: unknown[] = [vecBuffer];
+
+    if (input.type) {
+      sql += ' AND m.type = ?';
+      params.push(input.type);
+    }
+    if (input.project) {
+      sql += ' AND m.project = ?';
+      params.push(input.project);
+    }
+
+    sql += ' ORDER BY sub.distance LIMIT ?';
+    params.push(limit);
+
+    const rows = db.prepare(sql).all(...params) as (MemoryEntry & { distance: number; tags: string })[];
+
+    return rows.map(row => ({
+      ...row,
+      tags: JSON.parse(row.tags as string),
+      distance: row.distance,
+    }));
+  }
+
+  get(id: string): MemoryEntry | null {
+    const db = getDatabase();
+    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as (MemoryEntry & { tags: string }) | undefined;
+    if (!row) return null;
+    return { ...row, tags: JSON.parse(row.tags as string) };
+  }
+
+  async update(input: UpdateMemoryInput): Promise<MemoryEntry> {
+    const db = getDatabase();
+    const existing = this.get(input.id);
+    if (!existing) throw new Error(`Memory not found: ${input.id}`);
+
+    const now = new Date().toISOString();
+    const updates: string[] = ['updated_at = ?'];
+    const params: unknown[] = [now];
+
+    if (input.content !== undefined) {
+      updates.push('content = ?');
+      params.push(input.content);
+    }
+    if (input.type !== undefined) {
+      updates.push('type = ?');
+      params.push(input.type);
+    }
+    if (input.tags !== undefined) {
+      updates.push('tags = ?');
+      params.push(JSON.stringify(input.tags));
+    }
+    if (input.project !== undefined) {
+      updates.push('project = ?');
+      params.push(input.project);
+    }
+    if (input.confidence !== undefined) {
+      updates.push('confidence = ?');
+      params.push(input.confidence);
+    }
+    if (input.status !== undefined) {
+      updates.push('status = ?');
+      params.push(input.status);
+    }
+
+    params.push(input.id);
+    db.prepare(`UPDATE memories SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+
+    // 如果 content 变了，重新生成向量
+    if (input.content !== undefined) {
+      const embedding = await getEmbedding(input.content);
+      const vecBuffer = Buffer.from(new Float32Array(embedding).buffer);
+      const row = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(input.id) as { rowid: number | bigint };
+      db.prepare('DELETE FROM vec_memories WHERE rowid = ?').run(Number(row.rowid));
+      db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(row.rowid), vecBuffer);
+    }
+
+    return this.get(input.id)!;
+  }
+
+  delete(id: string): void {
+    const db = getDatabase();
+    const row = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number | bigint } | undefined;
+    if (row) {
+      db.prepare('DELETE FROM vec_memories WHERE rowid = ?').run(Number(row.rowid));
+      db.prepare('DELETE FROM memories WHERE id = ?').run(id);
+    }
+  }
+
+  list(type?: string, project?: string): MemoryEntry[] {
+    const db = getDatabase();
+    let sql = "SELECT * FROM memories WHERE status = 'active'";
+    const params: unknown[] = [];
+
+    if (type) { sql += ' AND type = ?'; params.push(type); }
+    if (project) { sql += ' AND project = ?'; params.push(project); }
+
+    sql += ' ORDER BY updated_at DESC';
+
+    const rows = db.prepare(sql).all(...params) as (MemoryEntry & { tags: string })[];
+    return rows.map(row => ({ ...row, tags: JSON.parse(row.tags as string) }));
+  }
+
+  export(): MemoryEntry[] {
+    const db = getDatabase();
+    const rows = db.prepare('SELECT * FROM memories ORDER BY created_at').all() as (MemoryEntry & { tags: string })[];
+    return rows.map(row => ({ ...row, tags: JSON.parse(row.tags as string) }));
+  }
+}
