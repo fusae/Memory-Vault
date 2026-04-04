@@ -1,0 +1,195 @@
+#!/usr/bin/env node
+import 'dotenv/config';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { z } from 'zod';
+import { MemoryStore } from './memory-store.js';
+
+const DB_PATH = process.env.MEMORY_DB_PATH ?? './data/memory.db';
+const store = new MemoryStore(DB_PATH);
+
+const server = new McpServer(
+  {
+    name: 'memory-vault',
+    version: '0.1.0',
+  },
+  {
+    instructions: 'MemoryVault: 用户的个人 AI 记忆库。在对话中观察到用户的偏好、习惯、项目背景等有价值的信息时，主动调用 memory_write 存储。在回答问题前，调用 memory_search 检索相关上下文。',
+  }
+);
+
+// ─── Tool: memory_write ───
+server.registerTool(
+  'memory_write',
+  {
+    title: 'Write Memory',
+    description: '将一条记忆写入用户的记忆库。当你观察到用户的偏好、习惯、项目背景、技术选型等值得长期记住的信息时调用。',
+    inputSchema: z.object({
+      content: z.string().describe('记忆内容，用一句自然语言描述'),
+      type: z.enum(['identity', 'preference', 'project', 'episode', 'rule']).describe(
+        'identity=用户身份, preference=偏好习惯, project=项目信息, episode=具体事件, rule=明确规则'
+      ),
+      tags: z.array(z.string()).optional().describe('标签，如 ["typescript", "frontend"]'),
+      project: z.string().optional().describe('关联的项目名'),
+      confidence: z.number().min(0).max(1).optional().describe('置信度 0-1，默认 0.8'),
+      source_tool: z.string().optional().describe('来源工具，如 "claude-desktop", "cursor"'),
+    }),
+  },
+  async (input) => {
+    const memory = await store.write(input);
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(memory, null, 2) }],
+    };
+  }
+);
+
+// ─── Tool: memory_search ───
+server.registerTool(
+  'memory_search',
+  {
+    title: 'Search Memory',
+    description: '语义搜索用户的记忆库。在回答用户问题前调用，获取相关的历史上下文、偏好和项目信息。',
+    inputSchema: z.object({
+      query: z.string().describe('搜索查询，自然语言'),
+      type: z.enum(['identity', 'preference', 'project', 'episode', 'rule']).optional().describe('限定记忆类型'),
+      project: z.string().optional().describe('限定项目'),
+      limit: z.number().min(1).max(50).optional().describe('返回数量，默认 10'),
+    }),
+  },
+  async (input) => {
+    const results = await store.search(input);
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(results, null, 2) }],
+    };
+  }
+);
+
+// ─── Tool: memory_list ───
+server.registerTool(
+  'memory_list',
+  {
+    title: 'List Memories',
+    description: '列出用户的所有活跃记忆，可按类型和项目筛选。',
+    inputSchema: z.object({
+      type: z.enum(['identity', 'preference', 'project', 'episode', 'rule']).optional(),
+      project: z.string().optional(),
+    }),
+  },
+  async (input) => {
+    const memories = store.list(input.type, input.project);
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(memories, null, 2) }],
+    };
+  }
+);
+
+// ─── Tool: memory_delete ───
+server.registerTool(
+  'memory_delete',
+  {
+    title: 'Delete Memory',
+    description: '删除一条记忆。当用户明确要求遗忘某条信息时调用。',
+    inputSchema: z.object({
+      id: z.string().describe('要删除的记忆 ID'),
+    }),
+  },
+  async ({ id }) => {
+    store.delete(id);
+    return {
+      content: [{ type: 'text' as const, text: `Memory ${id} deleted.` }],
+    };
+  }
+);
+
+// ─── Tool: memory_update ───
+server.registerTool(
+  'memory_update',
+  {
+    title: 'Update Memory',
+    description: '更新一条已有的记忆。当用户的偏好或项目信息发生变化时调用。',
+    inputSchema: z.object({
+      id: z.string().describe('记忆 ID'),
+      content: z.string().optional().describe('新的记忆内容'),
+      type: z.enum(['identity', 'preference', 'project', 'episode', 'rule']).optional(),
+      tags: z.array(z.string()).optional(),
+      project: z.string().optional(),
+      confidence: z.number().min(0).max(1).optional(),
+      status: z.enum(['active', 'archived', 'pending_review']).optional(),
+    }),
+  },
+  async (input) => {
+    const memory = await store.update(input);
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(memory, null, 2) }],
+    };
+  }
+);
+
+// ─── Tool: memory_export ───
+server.registerTool(
+  'memory_export',
+  {
+    title: 'Export All Memories',
+    description: '导出用户的全部记忆数据（JSON 格式）。用于备份或迁移。',
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const all = store.export();
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(all, null, 2) }],
+    };
+  }
+);
+
+// ─── Resource: 当前记忆上下文 ───
+server.registerResource(
+  'memory-context',
+  'memoryvault://context/summary',
+  {
+    title: 'Memory Context Summary',
+    description: '用户记忆库的概览摘要，包含身份、偏好和活跃项目信息',
+    mimeType: 'text/markdown',
+  },
+  async () => {
+    const identities = store.list('identity');
+    const preferences = store.list('preference');
+    const projects = store.list('project');
+    const rules = store.list('rule');
+
+    let md = '## User Memory Context (by MemoryVault)\n\n';
+
+    if (identities.length) {
+      md += '### Identity\n';
+      identities.forEach(m => { md += `- ${m.content}\n`; });
+      md += '\n';
+    }
+    if (preferences.length) {
+      md += '### Preferences\n';
+      preferences.forEach(m => { md += `- ${m.content}\n`; });
+      md += '\n';
+    }
+    if (projects.length) {
+      md += '### Projects\n';
+      projects.forEach(m => { md += `- ${m.content}\n`; });
+      md += '\n';
+    }
+    if (rules.length) {
+      md += '### Rules\n';
+      rules.forEach(m => { md += `- ${m.content}\n`; });
+      md += '\n';
+    }
+
+    return {
+      contents: [{ uri: 'memoryvault://context/summary', text: md }],
+    };
+  }
+);
+
+// ─── 启动 ───
+if (process.env.NODE_ENV !== 'test') {
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error('MemoryVault MCP Server running on stdio');
+}
+
+export { server, store };
