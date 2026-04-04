@@ -14,7 +14,18 @@ const server = new McpServer(
     version: '0.1.0',
   },
   {
-    instructions: 'MemoryVault: 用户的个人 AI 记忆库。在对话中观察到用户的偏好、习惯、项目背景等有价值的信息时，主动调用 memory_write 存储。在回答问题前，调用 memory_search 检索相关上下文。',
+    instructions: `MemoryVault: 用户的个人 AI 记忆库。
+
+自动写入规则：
+- 当用户透露个人偏好、工作习惯或编程风格时，调用 memory_write（type: preference）
+- 当用户介绍自己的身份或背景时，调用 memory_write（type: identity）
+- 当用户讨论项目架构、技术选型时，调用 memory_write（type: project）
+- 当用户明确要求"记住这个"或"以后都这样做"时，调用 memory_write（type: rule）
+- 写入前先用 memory_search 检查是否已有类似记忆，避免重复
+
+自动搜索规则：
+- 在回答用户问题前，如果问题涉及用户偏好或项目背景，先调用 memory_search
+- 当用户问"你知道我..."或"之前说过..."时，调用 memory_search`,
   }
 );
 
