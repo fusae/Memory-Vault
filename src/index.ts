@@ -141,6 +141,22 @@ server.registerTool(
   }
 );
 
+// ─── Tool: memory_export_markdown ───
+server.registerTool(
+  'memory_export_markdown',
+  {
+    title: 'Export Memories as Markdown',
+    description: '将全部记忆导出为结构化的 Markdown 文档，方便用户保存和阅读。',
+    inputSchema: z.object({}),
+  },
+  async () => {
+    const md = store.exportMarkdown();
+    return {
+      content: [{ type: 'text' as const, text: md }],
+    };
+  }
+);
+
 // ─── Resource: 当前记忆上下文 ───
 server.registerResource(
   'memory-context',

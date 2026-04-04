@@ -164,4 +164,27 @@ export class MemoryStore {
     const rows = db.prepare('SELECT * FROM memories ORDER BY created_at').all() as (MemoryEntry & { tags: string })[];
     return rows.map(row => ({ ...row, tags: JSON.parse(row.tags as string) }));
   }
+
+  exportMarkdown(): string {
+    const all = this.export();
+    const grouped: Record<string, MemoryEntry[]> = {};
+    for (const m of all) {
+      const key = m.type.charAt(0).toUpperCase() + m.type.slice(1);
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(m);
+    }
+    let md = '# MemoryVault Export\n\n';
+    md += `> Exported at ${new Date().toISOString()}\n\n`;
+    for (const [type, memories] of Object.entries(grouped)) {
+      md += `## ${type}\n\n`;
+      for (const m of memories) {
+        md += `- ${m.content}`;
+        if (m.tags.length) md += ` [${m.tags.join(', ')}]`;
+        if (m.project) md += ` (project: ${m.project})`;
+        md += '\n';
+      }
+      md += '\n';
+    }
+    return md;
+  }
 }

@@ -98,4 +98,21 @@ describe('MemoryStore', () => {
       expect(all).toHaveLength(2);
     });
   });
+
+  describe('exportMarkdown', () => {
+    it('should export memories as structured markdown', async () => {
+      await store.write({ content: 'Full-stack developer', type: 'identity' });
+      await store.write({ content: 'Prefers TypeScript', type: 'preference', tags: ['language'] });
+      await store.write({ content: 'ProjectX uses Next.js', type: 'project', project: 'ProjectX' });
+
+      const md = store.exportMarkdown();
+      expect(md).toContain('# MemoryVault Export');
+      expect(md).toContain('## Identity');
+      expect(md).toContain('Full-stack developer');
+      expect(md).toContain('## Preference');
+      expect(md).toContain('Prefers TypeScript');
+      expect(md).toContain('## Project');
+      expect(md).toContain('ProjectX uses Next.js');
+    });
+  });
 });
