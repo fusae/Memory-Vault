@@ -1,27 +1,36 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getEmbedding } from '../src/embedding.js';
 
-// Mock OpenAI to avoid real API calls in tests
-vi.mock('openai', () => {
-  return {
-    default: class {
-      embeddings = {
-        create: vi.fn().mockResolvedValue({
-          data: [{ embedding: new Array(1536).fill(0.1) }],
-        }),
-      };
-    },
-  };
-});
+const mockFetch = vi.fn();
+vi.stubGlobal('fetch', mockFetch);
 
 describe('getEmbedding', () => {
-  it('should return a 1536-dimension float array', async () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+  });
+
+  it('should return a 768-dimension float array', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ embedding: new Array(768).fill(0.1) }),
+    });
+
     const result = await getEmbedding('hello world');
-    expect(result).toHaveLength(1536);
+    expect(result).toHaveLength(768);
     expect(typeof result[0]).toBe('number');
   });
 
   it('should throw on empty input', async () => {
     await expect(getEmbedding('')).rejects.toThrow();
+  });
+
+  it('should throw on Ollama error', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: 'Internal Server Error',
+    });
+
+    await expect(getEmbedding('test')).rejects.toThrow('Ollama embedding failed');
   });
 });

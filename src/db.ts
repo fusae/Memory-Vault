@@ -3,7 +3,7 @@ import * as sqliteVec from 'sqlite-vec';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const EMBEDDING_DIMENSIONS = 1536; // OpenAI text-embedding-3-small
+const EMBEDDING_DIMENSIONS = 768; // nomic-embed-text via Ollama
 
 let _db: Database.Database | null = null;
 

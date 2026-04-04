@@ -6,8 +6,8 @@ import fs from 'node:fs';
 // Mock embedding: 返回基于内容 hash 的伪向量，使不同内容产生不同向量
 vi.mock('../src/embedding.js', () => ({
   getEmbedding: vi.fn().mockImplementation(async (text: string) => {
-    const vec = new Array(1536).fill(0);
-    for (let i = 0; i < text.length && i < 1536; i++) {
+    const vec = new Array(768).fill(0);
+    for (let i = 0; i < text.length && i < 768; i++) {
       vec[i] = text.charCodeAt(i) / 255;
     }
     return vec;

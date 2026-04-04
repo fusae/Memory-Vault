@@ -1,25 +1,19 @@
-import OpenAI from 'openai';
-
-const MODEL = 'text-embedding-3-small';
-const DIMENSIONS = 1536;
-
-let _client: OpenAI | null = null;
-
-function getClient(): OpenAI {
-  if (!_client) {
-    _client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  }
-  return _client;
-}
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
+const MODEL = 'nomic-embed-text';
 
 export async function getEmbedding(text: string): Promise<number[]> {
   if (!text.trim()) throw new Error('Cannot embed empty text');
 
-  const response = await getClient().embeddings.create({
-    model: MODEL,
-    input: text,
-    dimensions: DIMENSIONS,
+  const response = await fetch(`${OLLAMA_BASE_URL}/api/embeddings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: MODEL, prompt: text }),
   });
 
-  return response.data[0].embedding;
+  if (!response.ok) {
+    throw new Error(`Ollama embedding failed: ${response.status} ${response.statusText}`);
+  }
+
+  const data = (await response.json()) as { embedding: number[] };
+  return data.embedding;
 }
