@@ -201,6 +201,51 @@ server.registerResource(
   }
 );
 
+// ─── Prompt: memory_extract (记忆提炼) ───
+server.registerPrompt(
+  'memory_extract',
+  {
+    title: 'Extract Memories from Conversation',
+    description: '分析对话内容，提取值得长期记住的用户信息。在对话结束时调用。',
+    argsSchema: {
+      conversation: z.string().describe('要分析的对话内容'),
+    },
+  },
+  async ({ conversation }) => ({
+    messages: [
+      {
+        role: 'user' as const,
+        content: {
+          type: 'text' as const,
+          text: `你是一个记忆提炼引擎。分析以下用户与 AI 的对话记录，提取值得长期记住的信息。
+
+提取规则：
+1. 只提取"跨会话有价值"的信息，忽略一次性的具体问题
+2. 关注用户的偏好、习惯、纠正行为和反复出现的模式
+3. 关注项目层面的架构决策和技术选型
+4. 忽略通用知识（如"React 是一个前端框架"）
+5. 如果信息不确定，设置较低的 confidence（0.5-0.6）
+
+对于每一条提取的记忆，请调用 memory_write 工具写入，参数说明：
+- type: identity（用户身份）| preference（偏好习惯）| project（项目信息）| episode（具体事件）| rule（明确规则）
+- content: 一句自然语言描述
+- confidence: 0.0-1.0，根据信息确定程度设置
+- tags: 相关标签数组
+- project: 如果与特定项目相关，填写项目名
+
+如果对话中没有值得记忆的信息，请说明"本次对话无需提取记忆"。
+
+---
+
+以下是对话内容：
+
+${conversation}`,
+        },
+      },
+    ],
+  })
+);
+
 // ─── 启动 ───
 if (process.env.NODE_ENV !== 'test') {
   const transport = new StdioServerTransport();
