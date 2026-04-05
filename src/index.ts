@@ -6,9 +6,35 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { MemoryStore } from './memory-store.js';
+import { AuthService } from './auth.js';
 
 const DB_PATH = process.env.MEMORY_DB_PATH ?? path.join(os.homedir(), '.memoryvault', 'memory.db');
 const store = new MemoryStore(DB_PATH);
+
+// ─── Auto-Sync Setup ───
+// Try to establish sync connection if user has configured Supabase + logged in
+let autoSync: { push: () => Promise<unknown> } | null = null;
+
+async function initAutoSync() {
+  try {
+    const config = AuthService.loadConfig();
+    const url = process.env.SUPABASE_URL || config.supabase_url;
+    const key = process.env.SUPABASE_ANON_KEY || config.supabase_anon_key;
+    if (!url || !key) return;
+
+    const { createSupabaseClient } = await import('./supabase.js');
+    const supabase = createSupabaseClient(url, key);
+    const auth = new AuthService(supabase);
+    const session = await auth.getSession();
+    if (!session) return;
+
+    const { SyncService } = await import('./sync.js');
+    autoSync = new SyncService(store, supabase, session.user.id);
+  } catch { /* sync not available, continue without it */ }
+}
+
+// Fire and forget — don't block server startup
+initAutoSync();
 
 const server = new McpServer(
   {
@@ -61,6 +87,12 @@ server.registerTool(
   },
   async (input) => {
     const result = await store.write(input);
+
+    // Auto-sync in background if configured (fire and forget)
+    if (autoSync) {
+      autoSync.push().catch(() => {});
+    }
+
     // Keep response minimal to avoid disrupting conversation flow
     const action = result.conflict_action === 'created' ? 'saved'
       : result.conflict_action === 'updated_existing' ? 'updated'
@@ -123,6 +155,7 @@ server.registerTool(
   },
   async ({ id }) => {
     store.delete(id);
+    if (autoSync) autoSync.push().catch(() => {});
     return {
       content: [{ type: 'text' as const, text: `Memory ${id} deleted.` }],
     };
@@ -150,6 +183,7 @@ server.registerTool(
   },
   async (input) => {
     const memory = await store.update(input);
+    if (autoSync) autoSync.push().catch(() => {});
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(memory, null, 2) }],
     };
@@ -201,6 +235,7 @@ server.registerTool(
   },
   async ({ id, reason }) => {
     store.forget(id, reason);
+    if (autoSync) autoSync.push().catch(() => {});
     const memory = store.get(id);
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(memory, null, 2) }],
@@ -221,6 +256,7 @@ server.registerTool(
   },
   async ({ merge, into }) => {
     const memory = await store.consolidate(merge, into);
+    if (autoSync) autoSync.push().catch(() => {});
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(memory, null, 2) }],
     };
