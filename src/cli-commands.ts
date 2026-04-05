@@ -1,7 +1,9 @@
+import os from 'node:os';
+import path from 'node:path';
 import { MemoryStore } from './memory-store.js';
 import type { MemoryType } from './types.js';
 
-const DB_PATH = process.env.MEMORY_DB_PATH ?? './data/memory.db';
+const DB_PATH = process.env.MEMORY_DB_PATH ?? path.join(os.homedir(), '.memoryvault', 'memory.db');
 
 let _store: MemoryStore | null = null;
 function getStore(): MemoryStore {
@@ -24,6 +26,9 @@ export async function addMemory(content: string, opts: { type: string; tags?: st
   console.log(`  Type: ${memory.type}`);
   console.log(`  Content: ${memory.content}`);
   if (memory.tags.length) console.log(`  Tags: ${memory.tags.join(', ')}`);
+  if (result.conflict_action !== 'created') {
+    console.log(`  Conflict: ${result.conflict_action}`);
+  }
 }
 
 export async function searchMemories(query: string, opts: { type?: string; project?: string; limit?: string }) {
