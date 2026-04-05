@@ -22,4 +22,14 @@ describe('MCP Prompts', () => {
       expect('memory_review' in prompts).toBe(true);
     });
   });
+
+  describe('memory_organize', () => {
+    it('should be registered', async () => {
+      const mod = await import('../src/index.js');
+      const server = mod.server as any;
+
+      const prompts = server._registeredPrompts;
+      expect('memory_organize' in prompts).toBe(true);
+    });
+  });
 });
