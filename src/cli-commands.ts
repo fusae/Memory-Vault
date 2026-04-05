@@ -359,17 +359,24 @@ export async function syncCommand(opts: { push?: boolean; pull?: boolean; status
 // ─── Init Encryption ───
 export async function initEncryption() {
   const { CryptoService } = await import('./crypto.js');
+  const { randomBytes } = await import('node:crypto');
 
-  const passphrase = await askInput('Set encryption passphrase: ');
-  if (!passphrase || passphrase.length < 8) {
-    console.error('Passphrase must be at least 8 characters.');
-    process.exit(1);
-  }
+  const choice = await askInput('Generate a strong passphrase automatically? (Y/n): ');
+  let passphrase: string;
 
-  const confirm = await askInput('Confirm passphrase: ');
-  if (passphrase !== confirm) {
-    console.error('Passphrases do not match.');
-    process.exit(1);
+  if (choice.toLowerCase() === 'n') {
+    passphrase = await askInput('Set encryption passphrase (min 8 chars): ');
+    if (!passphrase || passphrase.length < 8) {
+      console.error('Passphrase must be at least 8 characters.');
+      process.exit(1);
+    }
+    const confirm = await askInput('Confirm passphrase: ');
+    if (passphrase !== confirm) {
+      console.error('Passphrases do not match.');
+      process.exit(1);
+    }
+  } else {
+    passphrase = randomBytes(24).toString('base64url');
   }
 
   const crypto = new CryptoService(passphrase);
@@ -379,26 +386,53 @@ export async function initEncryption() {
   const all = store.export();
   const plaintext = all.filter(m => !m.is_encrypted);
 
-  if (plaintext.length === 0) {
-    console.log('All memories are already encrypted.');
-    return;
+  if (plaintext.length > 0) {
+    console.log(`Encrypting ${plaintext.length} existing memories...`);
+
+    const { getDatabase } = await import('./db.js');
+    const db = getDatabase();
+
+    for (const m of plaintext) {
+      const encContent = crypto.encrypt(m.content);
+      const encTags = crypto.encrypt(JSON.stringify(m.tags));
+      const encExcerpt = m.source_excerpt ? crypto.encrypt(m.source_excerpt) : null;
+
+      db.prepare('UPDATE memories SET content = ?, tags = ?, source_excerpt = ?, is_encrypted = 1 WHERE id = ?')
+        .run(encContent, encTags, encExcerpt, m.id);
+    }
+
+    console.log(`Done. ${plaintext.length} memories encrypted.`);
+  } else {
+    console.log('No plaintext memories to encrypt.');
   }
 
-  console.log(`Encrypting ${plaintext.length} memories...`);
-
-  const { getDatabase } = await import('./db.js');
-  const db = getDatabase();
-
-  for (const m of plaintext) {
-    const encContent = crypto.encrypt(m.content);
-    const encTags = crypto.encrypt(JSON.stringify(m.tags));
-    const encExcerpt = m.source_excerpt ? crypto.encrypt(m.source_excerpt) : null;
-
-    db.prepare('UPDATE memories SET content = ?, tags = ?, source_excerpt = ?, is_encrypted = 1 WHERE id = ?')
-      .run(encContent, encTags, encExcerpt, m.id);
+  // Detect shell profile path
+  const shell = process.env.SHELL ?? '';
+  let profilePath: string;
+  if (shell.includes('zsh')) {
+    profilePath = '~/.zshrc';
+  } else if (shell.includes('fish')) {
+    profilePath = '~/.config/fish/config.fish';
+  } else if (process.platform === 'win32') {
+    profilePath = 'System Environment Variables (or $PROFILE for PowerShell)';
+  } else {
+    profilePath = '~/.bashrc';
   }
 
-  console.log(`Done. ${plaintext.length} memories encrypted.`);
-  console.log('\nIMPORTANT: Set MEMORYVAULT_PASSPHRASE environment variable for automatic decryption.');
-  console.log('Example: export MEMORYVAULT_PASSPHRASE="your-passphrase"');
+  console.log('\n=== Your Passphrase ===');
+  console.log(`\n  ${passphrase}\n`);
+  console.log('Save it somewhere safe (e.g. password manager). If lost, encrypted data cannot be recovered.\n');
+
+  if (process.platform === 'win32') {
+    console.log('Add this to your environment variables:\n');
+    console.log(`  MEMORYVAULT_PASSPHRASE=${passphrase}\n`);
+    console.log('Or in PowerShell $PROFILE:\n');
+    console.log(`  $env:MEMORYVAULT_PASSPHRASE="${passphrase}"`);
+  } else if (shell.includes('fish')) {
+    console.log(`Add this to ${profilePath}:\n`);
+    console.log(`  set -x MEMORYVAULT_PASSPHRASE "${passphrase}"`);
+  } else {
+    console.log(`Add this to ${profilePath}:\n`);
+    console.log(`  export MEMORYVAULT_PASSPHRASE="${passphrase}"`);
+  }
 }
