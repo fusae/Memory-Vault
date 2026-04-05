@@ -240,7 +240,7 @@ export async function authLogin() {
   await auth.sendOtp(email);
   console.log(`Verification code sent to ${email}. Check your inbox.`);
 
-  const token = await askInput('Enter the 6-digit code from email: ');
+  const token = await askInput('Enter the verification code from email: ');
   const session = await auth.verifyOtp(email, token);
   console.log(`Logged in as ${session.user.email} (${session.user.id})`);
 }

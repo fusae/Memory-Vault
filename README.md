@@ -57,13 +57,39 @@ The command will auto-generate a strong passphrase by default (or enter `n` to s
 
 ### 5. Enable Cloud Sync via Supabase (Optional)
 
+**5.1 Create a Supabase project**
+
+1. Go to [supabase.com](https://supabase.com) and sign up (free tier is sufficient)
+2. Click "New Project", pick a name and region, set a database password
+3. Wait for the project to finish provisioning
+
+**5.2 Get your credentials**
+
+In your Supabase project dashboard, go to **Settings > API** and copy:
+- **Project URL** (e.g. `https://abcdefg.supabase.co`)
+- **anon public key** (starts with `eyJ...`)
+
+**5.3 Set up the database**
+
+In your Supabase dashboard, go to **SQL Editor**, paste the contents of `scripts/setup-supabase.sql`, and click **Run**.
+
+**5.4 Configure email verification**
+
+Go to **Authentication > Email Templates > Magic Link** and replace the email body with:
+
+```
+Your MemoryVault verification code is: {{ .Token }}
+```
+
+This ensures the CLI receives a numeric code instead of a clickable link.
+
+**5.5 Connect MemoryVault**
+
 ```bash
-# Provide your Supabase URL and Anon Key
+# Enter your Supabase URL and Anon Key
 memory-vault-cli setup
 
-# Run scripts/setup-supabase.sql in your Supabase SQL Editor
-
-# Login via Magic Link
+# Login with your email
 memory-vault-cli auth login
 ```
 

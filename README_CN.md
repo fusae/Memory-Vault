@@ -57,13 +57,39 @@ memory-vault-cli init-encryption
 
 ### 5. 启用云端同步（可选，需要 Supabase）
 
+**5.1 创建 Supabase 项目**
+
+1. 去 [supabase.com](https://supabase.com) 注册（免费套餐即可）
+2. 点击 "New Project"，填写项目名和区域，设置数据库密码
+3. 等待项目创建完成
+
+**5.2 获取凭证**
+
+在 Supabase 项目 Dashboard 中，进入 **Settings > API**，复制：
+- **Project URL**（如 `https://abcdefg.supabase.co`）
+- **anon public key**（以 `eyJ...` 开头的字符串）
+
+**5.3 建表**
+
+在 Supabase Dashboard 中进入 **SQL Editor**，粘贴 `scripts/setup-supabase.sql` 的内容，点击 **Run**。
+
+**5.4 配置邮件验证**
+
+进入 **Authentication > Email Templates > Magic Link**，将邮件内容替换为：
+
+```
+Your MemoryVault verification code is: {{ .Token }}
+```
+
+这样 CLI 登录时会收到数字验证码而不是链接。
+
+**5.5 连接 MemoryVault**
+
 ```bash
-# 配置 Supabase URL 和 Anon Key
+# 输入 Supabase URL 和 Anon Key
 memory-vault-cli setup
 
-# 在 Supabase SQL Editor 中执行 scripts/setup-supabase.sql
-
-# 通过 Magic Link 登录
+# 用邮箱登录
 memory-vault-cli auth login
 ```
 
