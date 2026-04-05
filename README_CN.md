@@ -48,7 +48,7 @@ cp .env.example .env
 pnpm memory-vault-cli init-encryption
 ```
 
-初始化后，在 shell 配置文件中设置 `MEMORYVAULT_PASSPHRASE` 环境变量，以便服务自动解密。
+默认会自动生成一个强随机密码（输入 `n` 可以手动设定）。初始化完成后，按照输出提示将密码添加到你的 shell 配置文件中。
 
 ### 5. 启用云端同步（可选，需要 Supabase）
 

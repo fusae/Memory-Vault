@@ -48,7 +48,7 @@ cp .env.example .env
 pnpm memory-vault-cli init-encryption
 ```
 
-After initialization, set the `MEMORYVAULT_PASSPHRASE` environment variable in your shell profile so the server can decrypt data automatically.
+The command will auto-generate a strong passphrase by default (or enter `n` to set your own). After initialization, add the passphrase to your shell profile as instructed by the output.
 
 ### 5. Enable Cloud Sync via Supabase (Optional)
 
