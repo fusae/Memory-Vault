@@ -116,4 +116,42 @@ describe('MemoryStore', () => {
       expect(md).toContain('ProjectX uses Next.js');
     });
   });
+
+  describe('expires_at', () => {
+    it('should store expires_at when writing', async () => {
+      const future = new Date(Date.now() + 86400000).toISOString();
+      const result = await store.write({
+        content: 'temporary note',
+        type: 'episode',
+        expires_at: future,
+      });
+      const memory = store.get(result.memory.id);
+      expect(memory?.expires_at).toBe(future);
+    });
+
+    it('should filter out expired memories from list', async () => {
+      const past = new Date(Date.now() - 86400000).toISOString();
+      const future = new Date(Date.now() + 86400000).toISOString();
+
+      await store.write({ content: 'expired', type: 'episode', expires_at: past });
+      await store.write({ content: 'still valid', type: 'episode', expires_at: future });
+      await store.write({ content: 'no expiry', type: 'episode' });
+
+      const all = store.list();
+      expect(all).toHaveLength(2);
+      expect(all.some(m => m.content === 'expired')).toBe(false);
+      expect(all.some(m => m.content === 'still valid')).toBe(true);
+      expect(all.some(m => m.content === 'no expiry')).toBe(true);
+    });
+
+    it('should filter out expired memories from search', async () => {
+      const past = new Date(Date.now() - 86400000).toISOString();
+
+      await store.write({ content: 'expired search target', type: 'episode', expires_at: past });
+      await store.write({ content: 'active search target', type: 'episode' });
+
+      const results = await store.search({ query: 'search target' });
+      expect(results.every(r => r.content !== 'expired search target')).toBe(true);
+    });
+  });
 });

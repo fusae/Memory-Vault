@@ -26,11 +26,11 @@ export class MemoryStore {
     const vecBuffer = Buffer.from(new Float32Array(embedding).buffer);
 
     db.prepare(`
-      INSERT INTO memories (id, type, content, tags, project, confidence, source_tool, source_excerpt, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+      INSERT INTO memories (id, type, content, tags, project, confidence, source_tool, source_excerpt, status, expires_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
     `).run(id, input.type, input.content, tags, input.project ?? null,
            input.confidence ?? 0.8, input.source_tool ?? null,
-           input.source_excerpt ?? null, now, now);
+           input.source_excerpt ?? null, input.expires_at ?? null, now, now);
 
     // vec_memories 的 rowid 需要是整数，用 memories 表的 rowid
     const row = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number | bigint };
@@ -61,8 +61,9 @@ export class MemoryStore {
       ) sub
       INNER JOIN memories m ON m.rowid = sub.rowid
       WHERE m.status = 'active'
+        AND (m.expires_at IS NULL OR m.expires_at > ?)
     `;
-    const params: unknown[] = [vecBuffer];
+    const params: unknown[] = [vecBuffer, new Date().toISOString()];
 
     if (input.type) {
       sql += ' AND m.type = ?';
@@ -134,6 +135,10 @@ export class MemoryStore {
     if (input.status !== undefined) {
       updates.push('status = ?');
       params.push(input.status);
+    }
+    if (input.expires_at !== undefined) {
+      updates.push('expires_at = ?');
+      params.push(input.expires_at);
     }
 
     params.push(input.id);
@@ -213,8 +218,8 @@ export class MemoryStore {
 
   list(type?: string, project?: string): MemoryEntry[] {
     const db = getDatabase();
-    let sql = "SELECT * FROM memories WHERE status = 'active'";
-    const params: unknown[] = [];
+    let sql = "SELECT * FROM memories WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?)";
+    const params: unknown[] = [new Date().toISOString()];
 
     if (type) { sql += ' AND type = ?'; params.push(type); }
     if (project) { sql += ' AND project = ?'; params.push(project); }
