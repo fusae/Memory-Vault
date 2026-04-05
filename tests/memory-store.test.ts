@@ -30,15 +30,16 @@ describe('MemoryStore', () => {
 
   describe('write', () => {
     it('should create a memory and return it with an id', async () => {
-      const memory = await store.write({
+      const result = await store.write({
         content: 'User prefers TypeScript over JavaScript',
         type: 'preference',
         tags: ['language', 'typescript'],
       });
-      expect(memory.id).toBeTruthy();
-      expect(memory.content).toBe('User prefers TypeScript over JavaScript');
-      expect(memory.type).toBe('preference');
-      expect(memory.tags).toEqual(['language', 'typescript']);
+      expect(result.memory.id).toBeTruthy();
+      expect(result.memory.content).toBe('User prefers TypeScript over JavaScript');
+      expect(result.memory.type).toBe('preference');
+      expect(result.memory.tags).toEqual(['language', 'typescript']);
+      expect(result.conflict_action).toBe('created');
     });
   });
 
@@ -64,7 +65,7 @@ describe('MemoryStore', () => {
   describe('get', () => {
     it('should retrieve a memory by id', async () => {
       const created = await store.write({ content: 'test memory', type: 'identity' });
-      const found = store.get(created.id);
+      const found = store.get(created.memory.id);
       expect(found?.content).toBe('test memory');
     });
 
@@ -76,17 +77,17 @@ describe('MemoryStore', () => {
   describe('update', () => {
     it('should update memory content and re-embed', async () => {
       const created = await store.write({ content: 'old content', type: 'preference' });
-      const updated = await store.update({ id: created.id, content: 'new content' });
+      const updated = await store.update({ id: created.memory.id, content: 'new content' });
       expect(updated.content).toBe('new content');
-      expect(updated.updated_at).not.toBe(created.updated_at);
+      expect(updated.updated_at).not.toBe(created.memory.updated_at);
     });
   });
 
   describe('delete', () => {
     it('should remove a memory', async () => {
       const created = await store.write({ content: 'to delete', type: 'episode' });
-      store.delete(created.id);
-      expect(store.get(created.id)).toBeNull();
+      store.delete(created.memory.id);
+      expect(store.get(created.memory.id)).toBeNull();
     });
   });
 

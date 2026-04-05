@@ -7,6 +7,8 @@ import type {
   CreateMemoryInput,
   SearchMemoryInput,
   UpdateMemoryInput,
+  MemoryVersion,
+  WriteMemoryResult,
 } from './types.js';
 
 export class MemoryStore {
@@ -14,7 +16,7 @@ export class MemoryStore {
     createDatabase(dbPath);
   }
 
-  async write(input: CreateMemoryInput): Promise<MemoryEntry> {
+  async write(input: CreateMemoryInput): Promise<WriteMemoryResult> {
     const db = getDatabase();
     const id = randomUUID();
     const now = new Date().toISOString();
@@ -34,7 +36,10 @@ export class MemoryStore {
     const row = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number | bigint };
     db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(row.rowid), vecBuffer);
 
-    return this.get(id)!;
+    return {
+      memory: this.get(id)!,
+      conflict_action: 'created',
+    };
   }
 
   async search(input: SearchMemoryInput): Promise<MemorySearchResult[]> {
@@ -93,6 +98,16 @@ export class MemoryStore {
     if (!existing) throw new Error(`Memory not found: ${input.id}`);
 
     const now = new Date().toISOString();
+
+    // Save old content to version history if content is changing
+    if (input.content !== undefined && input.content !== existing.content) {
+      const versionId = randomUUID();
+      db.prepare(`
+        INSERT INTO memory_versions (id, memory_id, content, reason, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(versionId, input.id, existing.content, input.reason ?? 'updated', now);
+    }
+
     const updates: string[] = ['updated_at = ?'];
     const params: unknown[] = [now];
 
@@ -134,6 +149,13 @@ export class MemoryStore {
     }
 
     return this.get(input.id)!;
+  }
+
+  getVersions(memoryId: string): MemoryVersion[] {
+    const db = getDatabase();
+    return db.prepare(
+      'SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY created_at'
+    ).all(memoryId) as MemoryVersion[];
   }
 
   delete(id: string): void {

@@ -11,7 +11,7 @@ function getStore(): MemoryStore {
 
 export async function addMemory(content: string, opts: { type: string; tags?: string; project?: string; confidence?: string }) {
   const store = getStore();
-  const memory = await store.write({
+  const result = await store.write({
     content,
     type: opts.type as MemoryType,
     tags: opts.tags ? opts.tags.split(',').map(t => t.trim()) : undefined,
@@ -19,6 +19,7 @@ export async function addMemory(content: string, opts: { type: string; tags?: st
     confidence: opts.confidence ? parseFloat(opts.confidence) : undefined,
     source_tool: 'cli',
   });
+  const memory = result.memory;
   console.log(`✓ Memory created: ${memory.id}`);
   console.log(`  Type: ${memory.type}`);
   console.log(`  Content: ${memory.content}`);
