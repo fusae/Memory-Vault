@@ -18,9 +18,15 @@ export class AuthService {
     this.supabase = supabase;
   }
 
-  async sendMagicLink(email: string): Promise<void> {
-    const { error } = await this.supabase.auth.signInWithOtp({ email });
-    if (error) throw new Error(`Failed to send magic link: ${error.message}`);
+  async sendOtp(email: string): Promise<void> {
+    const { error } = await this.supabase.auth.signInWithOtp({
+      email,
+      options: {
+        shouldCreateUser: true,
+        // No emailRedirectTo — forces Supabase to send a 6-digit OTP code instead of a magic link
+      },
+    });
+    if (error) throw new Error(`Failed to send OTP: ${error.message}`);
   }
 
   async verifyOtp(email: string, token: string): Promise<Session> {

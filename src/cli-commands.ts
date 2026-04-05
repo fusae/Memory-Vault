@@ -237,8 +237,8 @@ export async function authLogin() {
   const email = await askInput('Email: ');
   if (!email) { console.error('Email required.'); process.exit(1); }
 
-  await auth.sendMagicLink(email);
-  console.log(`Magic link sent to ${email}. Check your inbox.`);
+  await auth.sendOtp(email);
+  console.log(`Verification code sent to ${email}. Check your inbox.`);
 
   const token = await askInput('Enter the 6-digit code from email: ');
   const session = await auth.verifyOtp(email, token);
