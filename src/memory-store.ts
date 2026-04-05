@@ -158,6 +158,50 @@ export class MemoryStore {
     ).all(memoryId) as MemoryVersion[];
   }
 
+  forget(id: string, reason?: string): void {
+    const db = getDatabase();
+    const existing = this.get(id);
+    if (!existing) throw new Error(`Memory not found: ${id}`);
+
+    const now = new Date().toISOString();
+    const versionId = randomUUID();
+
+    // Save current state to version history
+    db.prepare(`
+      INSERT INTO memory_versions (id, memory_id, content, reason, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(versionId, id, existing.content, reason ?? 'forgotten', now);
+
+    // Archive the memory
+    db.prepare("UPDATE memories SET status = 'archived', updated_at = ? WHERE id = ?").run(now, id);
+  }
+
+  async consolidate(mergeIds: string[], intoContent: string): Promise<MemoryEntry> {
+    if (mergeIds.length < 2) throw new Error('Consolidate requires at least 2 memories');
+
+    // Verify all memories exist
+    const memories = mergeIds.map(id => {
+      const m = this.get(id);
+      if (!m) throw new Error(`Memory not found: ${id}`);
+      return m;
+    });
+
+    // Create the merged memory using the first memory's type
+    const result = await this.write({
+      content: intoContent,
+      type: memories[0].type,
+      tags: [...new Set(memories.flatMap(m => m.tags))],
+      project: memories[0].project,
+    });
+
+    // Archive all original memories
+    for (const m of memories) {
+      this.forget(m.id, 'consolidated');
+    }
+
+    return result.memory;
+  }
+
   delete(id: string): void {
     const db = getDatabase();
     const row = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number | bigint } | undefined;
