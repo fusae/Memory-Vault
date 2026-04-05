@@ -8,6 +8,14 @@ import {
   getMemory,
   deleteMemory,
   exportMemories,
+  organizeMemories,
+  extractMemories,
+  authLogin,
+  authStatus,
+  authLogout,
+  setupCommand,
+  syncCommand,
+  initEncryption,
 } from './cli-commands.js';
 
 const program = new Command();
@@ -56,5 +64,42 @@ program
   .description('Export all memories')
   .option('-f, --format <format>', 'Output format: json | markdown (default: json)')
   .action(exportMemories);
+
+program
+  .command('organize')
+  .description('Analyze memory store health and suggest organization actions')
+  .option('--auto', 'Automatically execute safe cleanup actions')
+  .option('--project <project>', 'Only organize memories for this project')
+  .action(organizeMemories);
+
+program
+  .command('extract')
+  .description('Extract memories from conversation text or Claude Code transcript (.jsonl)')
+  .option('-f, --file <path>', 'Read conversation from file (auto-detects .jsonl transcript format)')
+  .option('--transcript', 'Force treating input as JSONL transcript format')
+  .action(extractMemories);
+
+const auth = program.command('auth').description('Manage authentication');
+auth.command('login').description('Log in with email (Magic Link)').action(authLogin);
+auth.command('status').description('Show current auth status').action(authStatus);
+auth.command('logout').description('Log out').action(authLogout);
+
+program
+  .command('setup')
+  .description('Configure Supabase connection for cloud sync')
+  .action(setupCommand);
+
+program
+  .command('sync')
+  .description('Sync memories with cloud')
+  .option('--push', 'Only push local changes to cloud')
+  .option('--pull', 'Only pull cloud changes to local')
+  .option('--status', 'Show sync status')
+  .action(syncCommand);
+
+program
+  .command('init-encryption')
+  .description('Set up encryption and encrypt all existing memories')
+  .action(initEncryption);
 
 program.parse();

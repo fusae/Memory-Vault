@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createDatabase, getDatabase } from './db.js';
 import { getEmbedding } from './embedding.js';
+import type { CryptoService } from './crypto.js';
 import type {
   MemoryEntry,
   MemorySearchResult,
@@ -14,17 +15,49 @@ import type {
 const CONFLICT_DISTANCE_THRESHOLD = 0.3;
 
 export class MemoryStore {
-  constructor(dbPath: string) {
+  private crypto?: CryptoService;
+
+  constructor(dbPath: string, crypto?: CryptoService) {
     createDatabase(dbPath);
+    this.crypto = crypto;
+  }
+
+  private encryptField(value: string): string {
+    return this.crypto ? this.crypto.encrypt(value) : value;
+  }
+
+  private decryptField(value: string, isEncrypted: boolean | number): string {
+    if (!isEncrypted || !this.crypto) return value;
+    return this.crypto.decrypt(value);
+  }
+
+  private decryptRow<T extends { content: string; tags: string | string[]; source_excerpt?: string | null; is_encrypted?: boolean | number }>(row: T): T {
+    const encrypted = !!(row.is_encrypted);
+    return {
+      ...row,
+      content: this.decryptField(row.content, encrypted),
+      tags: typeof row.tags === 'string'
+        ? JSON.parse(this.decryptField(row.tags, encrypted))
+        : row.tags,
+      source_excerpt: row.source_excerpt ? this.decryptField(row.source_excerpt, encrypted) : row.source_excerpt,
+      is_encrypted: !!row.is_encrypted,
+    };
   }
 
   async write(input: CreateMemoryInput): Promise<WriteMemoryResult> {
     const db = getDatabase();
     const id = randomUUID();
     const now = new Date().toISOString();
-    const tags = JSON.stringify(input.tags ?? []);
+    const tagsJson = JSON.stringify(input.tags ?? []);
 
+    // Embedding uses plaintext (before encryption) to enable semantic search
     const embedding = await getEmbedding(input.content);
+
+    // Encrypt sensitive fields for storage
+    const isEncrypted = !!this.crypto;
+    const storedContent = this.encryptField(input.content);
+    const storedTags = this.encryptField(tagsJson);
+    const storedExcerpt = input.source_excerpt ? this.encryptField(input.source_excerpt) : null;
     const vecBuffer = Buffer.from(new Float32Array(embedding).buffer);
 
     // Only run conflict detection if vec_memories has rows
@@ -32,7 +65,7 @@ export class MemoryStore {
     const vecCount = (db.prepare('SELECT COUNT(*) as count FROM vec_memories').get() as { count: number }).count;
 
     if (vecCount > 0) {
-      // Conflict detection: search for similar active memories of the same type
+      // Conflict detection: search for similar active/pending_review memories of the same type
       const conflictSql = `
         SELECT m.*, sub.distance
         FROM (
@@ -40,7 +73,7 @@ export class MemoryStore {
           WHERE embedding MATCH ? AND k = 3
         ) sub
         INNER JOIN memories m ON m.rowid = sub.rowid
-        WHERE m.status = 'active'
+        WHERE m.status IN ('active', 'pending_review')
           AND m.type = ?
           AND (m.expires_at IS NULL OR m.expires_at > ?)
       `;
@@ -51,16 +84,38 @@ export class MemoryStore {
       if (conflict) {
         const newConfidence = input.confidence ?? 0.8;
 
+        // Case 1: Conflicting memory is pending_review — increment confirmation_count
+        if (conflict.status === 'pending_review') {
+          const newCount = (conflict.confirmation_count ?? 0) + 1;
+          const autoPromote = newCount >= 3;
+
+          db.prepare(`
+            UPDATE memories SET confirmation_count = ?, status = ?, confidence = ?, updated_at = ? WHERE id = ?
+          `).run(
+            newCount,
+            autoPromote ? 'active' : 'pending_review',
+            autoPromote ? 0.8 : conflict.confidence,
+            now,
+            conflict.id
+          );
+
+          return {
+            memory: this.get(conflict.id)!,
+            conflict_action: autoPromote ? 'updated_existing' : 'created_pending_review',
+            conflicting_memory_id: conflict.id,
+          };
+        }
+
+        // Case 2: Conflicting memory is active, new confidence >= existing — update
         if (newConfidence >= conflict.confidence) {
-          // Auto-update existing memory
           const versionId = randomUUID();
           db.prepare(`
-            INSERT INTO memory_versions (id, memory_id, content, reason, created_at)
-            VALUES (?, ?, ?, ?, ?)
-          `).run(versionId, conflict.id, conflict.content, 'conflict: superseded by newer memory', now);
+            INSERT INTO memory_versions (id, memory_id, content, reason, created_at, is_encrypted)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `).run(versionId, conflict.id, conflict.content, 'conflict: superseded by newer memory', now, conflict.is_encrypted ? 1 : 0);
 
-          db.prepare('UPDATE memories SET content = ?, confidence = ?, updated_at = ? WHERE id = ?')
-            .run(input.content, newConfidence, now, conflict.id);
+          db.prepare('UPDATE memories SET content = ?, tags = ?, confidence = ?, is_encrypted = ?, sync_status = CASE WHEN sync_status = \'synced\' THEN \'modified\' ELSE sync_status END, updated_at = ? WHERE id = ?')
+            .run(storedContent, storedTags, newConfidence, isEncrypted ? 1 : 0, now, conflict.id);
 
           // Re-embed the updated memory
           const conflictRow = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(conflict.id) as { rowid: number | bigint };
@@ -72,34 +127,36 @@ export class MemoryStore {
             conflict_action: 'updated_existing',
             conflicting_memory_id: conflict.id,
           };
-        } else {
-          // Lower confidence: create as pending_review
-          db.prepare(`
-            INSERT INTO memories (id, type, content, tags, project, confidence, source_tool, source_excerpt, status, expires_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?)
-          `).run(id, input.type, input.content, tags, input.project ?? null,
-                 newConfidence, input.source_tool ?? null,
-                 input.source_excerpt ?? null, input.expires_at ?? null, now, now);
-
-          const row = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number | bigint };
-          db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(row.rowid), vecBuffer);
-
-          return {
-            memory: this.get(id)!,
-            conflict_action: 'created_pending_review',
-            conflicting_memory_id: conflict.id,
-          };
         }
+
+        // Case 3: Conflicting memory is active, new confidence < existing — create pending_review
+        db.prepare(`
+          INSERT INTO memories (id, type, content, tags, project, confidence, confirmation_count, source_tool, source_excerpt, source_conversation_id, is_encrypted, status, expires_at, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'pending_review', ?, ?, ?)
+        `).run(id, input.type, storedContent, storedTags, input.project ?? null,
+               newConfidence, input.source_tool ?? null,
+               storedExcerpt, input.source_conversation_id ?? null,
+               isEncrypted ? 1 : 0, input.expires_at ?? null, now, now);
+
+        const row = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number | bigint };
+        db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(row.rowid), vecBuffer);
+
+        return {
+          memory: this.get(id)!,
+          conflict_action: 'created_pending_review',
+          conflicting_memory_id: conflict.id,
+        };
       }
     }
 
     // No conflict: normal insert
     db.prepare(`
-      INSERT INTO memories (id, type, content, tags, project, confidence, source_tool, source_excerpt, status, expires_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
-    `).run(id, input.type, input.content, tags, input.project ?? null,
+      INSERT INTO memories (id, type, content, tags, project, confidence, confirmation_count, source_tool, source_excerpt, source_conversation_id, is_encrypted, status, expires_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'active', ?, ?, ?)
+    `).run(id, input.type, storedContent, storedTags, input.project ?? null,
            input.confidence ?? 0.8, input.source_tool ?? null,
-           input.source_excerpt ?? null, input.expires_at ?? null, now, now);
+           storedExcerpt, input.source_conversation_id ?? null,
+           isEncrypted ? 1 : 0, input.expires_at ?? null, now, now);
 
     const row = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number | bigint };
     db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(row.rowid), vecBuffer);
@@ -148,8 +205,7 @@ export class MemoryStore {
     const rows = db.prepare(sql).all(...params) as (MemoryEntry & { distance: number; tags: string })[];
 
     return rows.map(row => ({
-      ...row,
-      tags: JSON.parse(row.tags as string),
+      ...this.decryptRow(row),
       distance: row.distance,
     }));
   }
@@ -158,7 +214,7 @@ export class MemoryStore {
     const db = getDatabase();
     const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as (MemoryEntry & { tags: string }) | undefined;
     if (!row) return null;
-    return { ...row, tags: JSON.parse(row.tags as string) };
+    return this.decryptRow(row);
   }
 
   async update(input: UpdateMemoryInput): Promise<MemoryEntry> {
@@ -171,18 +227,26 @@ export class MemoryStore {
     // Save old content to version history if content is changing
     if (input.content !== undefined && input.content !== existing.content) {
       const versionId = randomUUID();
+      // Store the old content encrypted (re-read raw from DB to preserve encryption)
+      const rawRow = db.prepare('SELECT content, is_encrypted FROM memories WHERE id = ?').get(input.id) as { content: string; is_encrypted: number };
       db.prepare(`
-        INSERT INTO memory_versions (id, memory_id, content, reason, created_at)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(versionId, input.id, existing.content, input.reason ?? 'updated', now);
+        INSERT INTO memory_versions (id, memory_id, content, reason, created_at, is_encrypted)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(versionId, input.id, rawRow.content, input.reason ?? 'updated', now, rawRow.is_encrypted);
     }
 
+    const isEncrypted = !!this.crypto;
     const updates: string[] = ['updated_at = ?'];
     const params: unknown[] = [now];
 
+    // Mark as modified for sync
+    updates.push("sync_status = CASE WHEN sync_status = 'synced' THEN 'modified' ELSE sync_status END");
+
     if (input.content !== undefined) {
       updates.push('content = ?');
-      params.push(input.content);
+      params.push(this.encryptField(input.content));
+      updates.push('is_encrypted = ?');
+      params.push(isEncrypted ? 1 : 0);
     }
     if (input.type !== undefined) {
       updates.push('type = ?');
@@ -190,7 +254,7 @@ export class MemoryStore {
     }
     if (input.tags !== undefined) {
       updates.push('tags = ?');
-      params.push(JSON.stringify(input.tags));
+      params.push(this.encryptField(JSON.stringify(input.tags)));
     }
     if (input.project !== undefined) {
       updates.push('project = ?');
@@ -207,6 +271,10 @@ export class MemoryStore {
     if (input.expires_at !== undefined) {
       updates.push('expires_at = ?');
       params.push(input.expires_at);
+    }
+    if (input.source_conversation_id !== undefined) {
+      updates.push('source_conversation_id = ?');
+      params.push(input.source_conversation_id);
     }
 
     params.push(input.id);
@@ -226,9 +294,13 @@ export class MemoryStore {
 
   getVersions(memoryId: string): MemoryVersion[] {
     const db = getDatabase();
-    return db.prepare(
+    const rows = db.prepare(
       'SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY created_at'
-    ).all(memoryId) as MemoryVersion[];
+    ).all(memoryId) as (MemoryVersion & { is_encrypted?: number })[];
+    return rows.map(row => ({
+      ...row,
+      content: this.decryptField(row.content, row.is_encrypted ?? 0),
+    }));
   }
 
   forget(id: string, reason?: string): void {
@@ -239,14 +311,15 @@ export class MemoryStore {
     const now = new Date().toISOString();
     const versionId = randomUUID();
 
-    // Save current state to version history
+    // Save current state to version history (raw encrypted content from DB)
+    const rawRow = db.prepare('SELECT content, is_encrypted FROM memories WHERE id = ?').get(id) as { content: string; is_encrypted: number };
     db.prepare(`
-      INSERT INTO memory_versions (id, memory_id, content, reason, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(versionId, id, existing.content, reason ?? 'forgotten', now);
+      INSERT INTO memory_versions (id, memory_id, content, reason, created_at, is_encrypted)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(versionId, id, rawRow.content, reason ?? 'forgotten', now, rawRow.is_encrypted);
 
     // Archive the memory
-    db.prepare("UPDATE memories SET status = 'archived', updated_at = ? WHERE id = ?").run(now, id);
+    db.prepare("UPDATE memories SET status = 'archived', sync_status = CASE WHEN sync_status = 'synced' THEN 'modified' ELSE sync_status END, updated_at = ? WHERE id = ?").run(now, id);
   }
 
   async consolidate(mergeIds: string[], intoContent: string): Promise<MemoryEntry> {
@@ -284,24 +357,106 @@ export class MemoryStore {
     }
   }
 
-  list(type?: string, project?: string): MemoryEntry[] {
+  list(type?: string, project?: string, options?: { includeAll?: boolean; status?: string }): MemoryEntry[] {
     const db = getDatabase();
-    let sql = "SELECT * FROM memories WHERE status = 'active' AND (expires_at IS NULL OR expires_at > ?)";
-    const params: unknown[] = [new Date().toISOString()];
+    const conditions: string[] = [];
+    const params: unknown[] = [];
 
-    if (type) { sql += ' AND type = ?'; params.push(type); }
-    if (project) { sql += ' AND project = ?'; params.push(project); }
+    if (options?.includeAll) {
+      // No status/expiry filter — return everything
+    } else if (options?.status) {
+      conditions.push('status = ?');
+      params.push(options.status);
+    } else {
+      conditions.push("status = 'active'");
+      conditions.push('(expires_at IS NULL OR expires_at > ?)');
+      params.push(new Date().toISOString());
+    }
 
+    if (type) { conditions.push('type = ?'); params.push(type); }
+    if (project) { conditions.push('project = ?'); params.push(project); }
+
+    let sql = 'SELECT * FROM memories';
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
     sql += ' ORDER BY updated_at DESC';
 
     const rows = db.prepare(sql).all(...params) as (MemoryEntry & { tags: string })[];
-    return rows.map(row => ({ ...row, tags: JSON.parse(row.tags as string) }));
+    return rows.map(row => this.decryptRow(row));
+  }
+
+  getHealthStats(): {
+    total: number;
+    byType: Record<string, number>;
+    byStatus: Record<string, number>;
+    pendingReviewCount: number;
+    lowConfidenceCount: number;
+    staleEpisodesCount: number;
+    oldestMemory: string | null;
+    newestMemory: string | null;
+  } {
+    const db = getDatabase();
+
+    const total = (db.prepare('SELECT COUNT(*) as count FROM memories').get() as { count: number }).count;
+
+    const typeRows = db.prepare('SELECT type, COUNT(*) as count FROM memories GROUP BY type').all() as { type: string; count: number }[];
+    const byType: Record<string, number> = {};
+    for (const row of typeRows) byType[row.type] = row.count;
+
+    const statusRows = db.prepare('SELECT status, COUNT(*) as count FROM memories GROUP BY status').all() as { status: string; count: number }[];
+    const byStatus: Record<string, number> = {};
+    for (const row of statusRows) byStatus[row.status] = row.count;
+
+    const pendingReviewCount = (db.prepare("SELECT COUNT(*) as count FROM memories WHERE status = 'pending_review'").get() as { count: number }).count;
+    const lowConfidenceCount = (db.prepare("SELECT COUNT(*) as count FROM memories WHERE confidence < 0.5 AND status = 'active'").get() as { count: number }).count;
+
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const staleEpisodesCount = (db.prepare(
+      "SELECT COUNT(*) as count FROM memories WHERE type = 'episode' AND status = 'active' AND expires_at IS NULL AND created_at < ?"
+    ).get(thirtyDaysAgo) as { count: number }).count;
+
+    const oldest = db.prepare('SELECT created_at FROM memories ORDER BY created_at ASC LIMIT 1').get() as { created_at: string } | undefined;
+    const newest = db.prepare('SELECT created_at FROM memories ORDER BY created_at DESC LIMIT 1').get() as { created_at: string } | undefined;
+
+    return {
+      total,
+      byType,
+      byStatus,
+      pendingReviewCount,
+      lowConfidenceCount,
+      staleEpisodesCount,
+      oldestMemory: oldest?.created_at ?? null,
+      newestMemory: newest?.created_at ?? null,
+    };
+  }
+
+  autoOrganize(project?: string): { expiredCount: number; archivedCount: number } {
+    const db = getDatabase();
+    const now = new Date().toISOString();
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const thirtyDaysFromNow = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    // Set expires_at on old episodes without expiry
+    let expireSql = "UPDATE memories SET expires_at = ?, updated_at = ? WHERE type = 'episode' AND status = 'active' AND expires_at IS NULL AND created_at < ?";
+    const expireParams: unknown[] = [thirtyDaysFromNow, now, thirtyDaysAgo];
+    if (project) { expireSql += ' AND project = ?'; expireParams.push(project); }
+    const expireResult = db.prepare(expireSql).run(...expireParams);
+
+    // Archive very low confidence unconfirmed memories
+    let archiveSql = "UPDATE memories SET status = 'archived', updated_at = ? WHERE confidence < 0.3 AND confirmation_count = 0 AND status IN ('active', 'pending_review')";
+    const archiveParams: unknown[] = [now];
+    if (project) { archiveSql += ' AND project = ?'; archiveParams.push(project); }
+    const archiveResult = db.prepare(archiveSql).run(...archiveParams);
+
+    return {
+      expiredCount: expireResult.changes,
+      archivedCount: archiveResult.changes,
+    };
   }
 
   export(): MemoryEntry[] {
     const db = getDatabase();
     const rows = db.prepare('SELECT * FROM memories ORDER BY created_at').all() as (MemoryEntry & { tags: string })[];
-    return rows.map(row => ({ ...row, tags: JSON.parse(row.tags as string) }));
+    return rows.map(row => this.decryptRow(row));
   }
 
   exportMarkdown(): string {

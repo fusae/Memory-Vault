@@ -38,10 +38,31 @@ export function createDatabase(dbPath: string): Database.Database {
     USING vec0(embedding float[${EMBEDDING_DIMENSIONS}])
   `);
 
-  // Migration: add expires_at column if missing
+  // Migrations: add columns if missing
   const columns = db.pragma('table_info(memories)') as { name: string }[];
   if (!columns.some(c => c.name === 'expires_at')) {
     db.exec('ALTER TABLE memories ADD COLUMN expires_at TEXT');
+  }
+  if (!columns.some(c => c.name === 'confirmation_count')) {
+    db.exec('ALTER TABLE memories ADD COLUMN confirmation_count INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!columns.some(c => c.name === 'source_conversation_id')) {
+    db.exec('ALTER TABLE memories ADD COLUMN source_conversation_id TEXT');
+  }
+  if (!columns.some(c => c.name === 'is_encrypted')) {
+    db.exec('ALTER TABLE memories ADD COLUMN is_encrypted INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!columns.some(c => c.name === 'user_id')) {
+    db.exec('ALTER TABLE memories ADD COLUMN user_id TEXT');
+  }
+  if (!columns.some(c => c.name === 'sync_status')) {
+    db.exec("ALTER TABLE memories ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'local_only'");
+  }
+  if (!columns.some(c => c.name === 'remote_id')) {
+    db.exec('ALTER TABLE memories ADD COLUMN remote_id TEXT');
+  }
+  if (!columns.some(c => c.name === 'last_synced_at')) {
+    db.exec('ALTER TABLE memories ADD COLUMN last_synced_at TEXT');
   }
 
   // Create memory_versions table for version history
@@ -54,6 +75,12 @@ export function createDatabase(dbPath: string): Database.Database {
       created_at TEXT NOT NULL
     )
   `);
+
+  // Migration: add is_encrypted to memory_versions
+  const versionColumns = db.pragma('table_info(memory_versions)') as { name: string }[];
+  if (!versionColumns.some(c => c.name === 'is_encrypted')) {
+    db.exec('ALTER TABLE memory_versions ADD COLUMN is_encrypted INTEGER NOT NULL DEFAULT 0');
+  }
 
   _db = db;
   return db;

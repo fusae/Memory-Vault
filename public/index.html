@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MemoryVault Dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>MemoryVault</h1>
+    <nav>
+      <button class="tab active" data-view="timeline">Timeline</button>
+      <button class="tab" data-view="health">Health</button>
+    </nav>
+    <div class="header-actions">
+      <span id="sync-status" class="sync-badge"></span>
+      <button id="btn-sync" class="btn btn-sm" style="display:none" onclick="doSync()">Sync</button>
+      <a href="/api/export" download="memoryvault-export.json" class="btn btn-sm">Export JSON</a>
+    </div>
+  </header>
+
+  <main>
+    <!-- Timeline View -->
+    <section id="view-timeline" class="view active">
+      <div class="filters">
+        <select id="filter-type">
+          <option value="">All Types</option>
+          <option value="identity">Identity</option>
+          <option value="preference">Preference</option>
+          <option value="project">Project</option>
+          <option value="episode">Episode</option>
+          <option value="rule">Rule</option>
+        </select>
+        <select id="filter-status">
+          <option value="">Active</option>
+          <option value="all">All Statuses</option>
+          <option value="archived">Archived</option>
+          <option value="pending_review">Pending Review</option>
+        </select>
+        <input id="filter-project" type="text" placeholder="Project filter...">
+        <span id="memory-count" class="count"></span>
+      </div>
+      <div id="timeline-list" class="memory-list"></div>
+    </section>
+
+    <!-- Health View -->
+    <section id="view-health" class="view">
+      <div id="health-content"></div>
+    </section>
+  </main>
+
+  <!-- Edit Modal -->
+  <dialog id="edit-modal">
+    <form id="edit-form" method="dialog">
+      <h2>Edit Memory</h2>
+      <input type="hidden" id="edit-id">
+
+      <label>Content
+        <textarea id="edit-content" rows="3" required></textarea>
+      </label>
+
+      <div class="form-row">
+        <label>Type
+          <select id="edit-type">
+            <option value="identity">Identity</option>
+            <option value="preference">Preference</option>
+            <option value="project">Project</option>
+            <option value="episode">Episode</option>
+            <option value="rule">Rule</option>
+          </select>
+        </label>
+        <label>Confidence
+          <input id="edit-confidence" type="number" min="0" max="1" step="0.1">
+        </label>
+        <label>Status
+          <select id="edit-status">
+            <option value="active">Active</option>
+            <option value="archived">Archived</option>
+            <option value="pending_review">Pending Review</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="form-row">
+        <label>Tags (comma-separated)
+          <input id="edit-tags" type="text">
+        </label>
+        <label>Project
+          <input id="edit-project" type="text">
+        </label>
+      </div>
+
+      <label>Expires At
+        <input id="edit-expires" type="datetime-local">
+      </label>
+
+      <div class="form-row">
+        <label>Reason for update
+          <input id="edit-reason" type="text" placeholder="Why are you changing this?">
+        </label>
+      </div>
+
+      <div id="version-history" class="versions"></div>
+
+      <div class="modal-meta" id="edit-meta"></div>
+
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-primary">Save</button>
+        <button type="button" class="btn btn-danger" id="btn-forget">Forget</button>
+        <button type="button" class="btn btn-danger-outline" id="btn-delete">Delete</button>
+        <button type="button" class="btn" id="btn-cancel">Cancel</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>

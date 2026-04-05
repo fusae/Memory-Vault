@@ -21,24 +21,30 @@
   },
   "files": [
     "build",
+    "public",
     "README.md",
     "LICENSE"
   ],
   "bin": {
     "memory-vault": "./build/index.js",
-    "memory-vault-cli": "./build/cli.js"
+    "memory-vault-cli": "./build/cli.js",
+    "memory-vault-dashboard": "./build/dashboard.js"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
+    "dashboard": "tsx src/dashboard.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@hono/node-server": "^1.19.12",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@supabase/supabase-js": "^2.101.1",
     "better-sqlite3": "^11.0.0",
     "commander": "^14.0.3",
     "dotenv": "^16.4.0",
+    "hono": "^4.12.10",
     "sqlite-vec": "^0.1.0",
     "zod": "^3.25.0"
   },

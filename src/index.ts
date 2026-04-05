@@ -46,6 +46,7 @@ server.registerTool(
       project: z.string().optional().describe('Associated project name'),
       confidence: z.number().min(0).max(1).optional().describe('Confidence 0-1, default 0.8'),
       source_tool: z.string().optional().describe('Source tool, e.g. "claude-desktop", "cursor"'),
+      source_conversation_id: z.string().optional().describe('Conversation ID where this memory originated'),
       expires_at: z.string().optional().describe('ISO 8601 expiration date, optional'),
     }),
   },
@@ -131,6 +132,7 @@ server.registerTool(
       status: z.enum(['active', 'archived', 'pending_review']).optional(),
       reason: z.string().optional().describe('Reason for this update (stored in version history)'),
       expires_at: z.string().optional().describe('ISO 8601 expiration date'),
+      source_conversation_id: z.string().optional().describe('Conversation ID'),
     }),
   },
   async (input) => {
@@ -226,6 +228,73 @@ server.registerTool(
     const versions = store.getVersions(id);
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(versions, null, 2) }],
+    };
+  }
+);
+
+// ─── Tool: memory_dream ───
+server.registerTool(
+  'memory_dream',
+  {
+    title: 'Dream — Organize Memory Store',
+    description: 'Run the full memory organization cycle (orient, gather signal, consolidate, prune). Returns health analysis and actionable recommendations. Execute the suggested tool calls to carry out the organization.',
+    inputSchema: z.object({
+      project: z.string().optional().describe('Only organize memories for this project'),
+      dry_run: z.boolean().optional().describe('If true, only report what would be done without making changes'),
+    }),
+  },
+  async ({ project, dry_run }) => {
+    const stats = store.getHealthStats();
+    const memories = store.list(undefined, project);
+
+    // Group memories for analysis
+    const grouped: Record<string, typeof memories> = {};
+    for (const m of memories) {
+      if (!grouped[m.type]) grouped[m.type] = [];
+      grouped[m.type].push(m);
+    }
+
+    let report = `# Memory Dream — Organization Report\n\n`;
+    report += `## Phase 1: Orient\n\n`;
+    report += `- Total memories: ${stats.total}\n`;
+    report += `- By type: ${Object.entries(stats.byType).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+    report += `- By status: ${Object.entries(stats.byStatus).map(([k, v]) => `${k}(${v})`).join(', ')}\n`;
+    report += `- Pending review: ${stats.pendingReviewCount}\n`;
+    report += `- Low confidence (<0.5): ${stats.lowConfidenceCount}\n`;
+    report += `- Stale episodes (>30d, no expiry): ${stats.staleEpisodesCount}\n\n`;
+
+    report += `## Phase 2: Gather Signal\n\n`;
+    report += `Review the following memories for duplicates, contradictions, and staleness:\n\n`;
+    for (const [type, items] of Object.entries(grouped)) {
+      report += `### ${type} (${items.length})\n`;
+      for (const m of items) {
+        report += `- [${m.id}] ${m.content}`;
+        if (m.tags.length) report += ` [${m.tags.join(', ')}]`;
+        report += ` — confidence: ${m.confidence}, updated: ${m.updated_at}\n`;
+      }
+      report += '\n';
+    }
+
+    report += `## Phase 3: Consolidate\n\n`;
+    report += `For each group of near-duplicate or closely related memories, call \`memory_consolidate\` with the IDs and a merged summary.\n\n`;
+
+    report += `## Phase 4: Prune\n\n`;
+    report += `Actions to take:\n`;
+    report += `- Call \`memory_forget\` on outdated episode memories\n`;
+    report += `- Call \`memory_update\` to set \`expires_at\` on episodes older than 30 days\n`;
+    report += `- Call \`memory_forget\` on memories with confidence < 0.3 that have never been confirmed\n\n`;
+
+    if (!dry_run) {
+      const result = store.autoOrganize(project);
+      report += `### Auto-executed safe actions:\n`;
+      report += `- Set expires_at on ${result.expiredCount} stale episode(s)\n`;
+      report += `- Archived ${result.archivedCount} very low confidence memory(ies)\n`;
+    } else {
+      report += `_Dry run mode — no changes made. Remove dry_run to execute safe auto-actions._\n`;
+    }
+
+    return {
+      content: [{ type: 'text' as const, text: report }],
     };
   }
 );
@@ -419,13 +488,14 @@ ${memoriesList}`,
 server.registerPrompt(
   'memory_organize',
   {
-    title: 'Organize Memories',
-    description: 'Analyze all active memories and suggest consolidations, deduplication, and cleanup.',
+    title: 'Organize Memories (Dream)',
+    description: 'Four-phase memory organization inspired by REM sleep: orient, gather signal, consolidate, prune.',
     argsSchema: {
       project: z.string().optional().describe('Optional project filter'),
     },
   },
   async ({ project }) => {
+    const stats = store.getHealthStats();
     const memories = store.list(undefined, project as string | undefined);
 
     const grouped: Record<string, typeof memories> = {};
@@ -451,20 +521,36 @@ server.registerPrompt(
           role: 'user' as const,
           content: {
             type: 'text' as const,
-            text: `You are a memory organizer. Analyze the following active memories and suggest improvements.
+            text: `You are a memory organizer running a four-phase "Dream" cycle, inspired by how the brain consolidates memories during REM sleep.
 
-Tasks:
-1. Identify duplicates or near-duplicates that should be consolidated
-2. Suggest merging related memories into single, clearer entries
-3. Flag stale or contradictory memories
-4. Recommend setting expires_at on episode-type memories older than 30 days
-5. Identify low-confidence memories that should be reviewed
+## Health Stats
+- Total: ${stats.total} memories
+- By type: ${Object.entries(stats.byType).map(([k, v]) => `${k}(${v})`).join(', ')}
+- By status: ${Object.entries(stats.byStatus).map(([k, v]) => `${k}(${v})`).join(', ')}
+- Pending review: ${stats.pendingReviewCount}
+- Low confidence (<0.5): ${stats.lowConfidenceCount}
+- Stale episodes (>30d, no expiry): ${stats.staleEpisodesCount}
 
-For each suggestion, specify the action:
-- To merge: call memory_consolidate with the IDs and merged content
-- To update: call memory_update with the changes
-- To soft-delete: call memory_forget with the reason
-- To set expiration: call memory_update with expires_at
+## Phase 1: Orient
+Assess the overall health of the memory store. Note any imbalances (too many episodes vs rules, many pending reviews, etc).
+
+## Phase 2: Gather Signal
+Review each memory below and identify:
+1. Near-duplicates that should be merged
+2. Contradictions that need resolution (keep the newer/more confident one)
+3. Stale episodes (>30 days old) that should expire
+4. Low-confidence memories that need confirmation or removal
+
+## Phase 3: Consolidate
+For each group of related memories, call \`memory_consolidate\` with the IDs and a clear merged summary.
+For contradictions, call \`memory_update\` to fix the active one and \`memory_forget\` the outdated one.
+
+## Phase 4: Prune
+- Call \`memory_forget\` on outdated episode memories (with reason)
+- Call \`memory_update\` with \`expires_at\` on episodes older than 30 days
+- Call \`memory_forget\` on memories with confidence < 0.3 that have never been confirmed
+
+---
 
 Active memories:
 ${memoriesList || '\n_No active memories found._'}`,
