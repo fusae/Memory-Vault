@@ -19,6 +19,18 @@ Instead of retraining every new AI tool on who you are, what you prefer, and how
 
 ## Installation & Setup
 
+### Quick Start (Interactive)
+
+```bash
+git clone https://github.com/memoryvault/memory-vault.git
+cd memory-vault
+bash scripts/setup.sh
+```
+
+The interactive script will guide you through all steps: prerequisites check, build, CLI registration, MCP integration, encryption, and cloud sync.
+
+### Manual Setup
+
 ### 1. Prerequisites
 
 - **Node.js** >= 18

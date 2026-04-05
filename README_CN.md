@@ -19,6 +19,18 @@ MemoryVault 是一个本地优先、端到端加密的 MCP（Model Context Proto
 
 ## 安装与配置
 
+### 快速开始（交互式）
+
+```bash
+git clone https://github.com/memoryvault/memory-vault.git
+cd memory-vault
+bash scripts/setup.sh
+```
+
+交互式脚本会引导你完成所有步骤：环境检查、构建、CLI 注册、MCP 接入、加密和云端同步。
+
+### 手动安装
+
 ### 1. 前置要求
 
 - **Node.js** >= 18
