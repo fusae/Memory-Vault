@@ -11,6 +11,8 @@ import type {
   WriteMemoryResult,
 } from './types.js';
 
+const CONFLICT_DISTANCE_THRESHOLD = 0.3;
+
 export class MemoryStore {
   constructor(dbPath: string) {
     createDatabase(dbPath);
@@ -25,6 +27,73 @@ export class MemoryStore {
     const embedding = await getEmbedding(input.content);
     const vecBuffer = Buffer.from(new Float32Array(embedding).buffer);
 
+    // Only run conflict detection if vec_memories has rows
+    // (vec0 MATCH query fails on empty table)
+    const vecCount = (db.prepare('SELECT COUNT(*) as count FROM vec_memories').get() as { count: number }).count;
+
+    if (vecCount > 0) {
+      // Conflict detection: search for similar active memories of the same type
+      const conflictSql = `
+        SELECT m.*, sub.distance
+        FROM (
+          SELECT rowid, distance FROM vec_memories
+          WHERE embedding MATCH ? AND k = 3
+        ) sub
+        INNER JOIN memories m ON m.rowid = sub.rowid
+        WHERE m.status = 'active'
+          AND m.type = ?
+          AND (m.expires_at IS NULL OR m.expires_at > ?)
+      `;
+      const similar = db.prepare(conflictSql).all(vecBuffer, input.type, now) as (MemoryEntry & { distance: number; tags: string })[];
+
+      const conflict = similar.find(s => s.distance < CONFLICT_DISTANCE_THRESHOLD);
+
+      if (conflict) {
+        const newConfidence = input.confidence ?? 0.8;
+
+        if (newConfidence >= conflict.confidence) {
+          // Auto-update existing memory
+          const versionId = randomUUID();
+          db.prepare(`
+            INSERT INTO memory_versions (id, memory_id, content, reason, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(versionId, conflict.id, conflict.content, 'conflict: superseded by newer memory', now);
+
+          db.prepare('UPDATE memories SET content = ?, confidence = ?, updated_at = ? WHERE id = ?')
+            .run(input.content, newConfidence, now, conflict.id);
+
+          // Re-embed the updated memory
+          const conflictRow = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(conflict.id) as { rowid: number | bigint };
+          db.prepare('DELETE FROM vec_memories WHERE rowid = ?').run(Number(conflictRow.rowid));
+          db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(conflictRow.rowid), vecBuffer);
+
+          return {
+            memory: this.get(conflict.id)!,
+            conflict_action: 'updated_existing',
+            conflicting_memory_id: conflict.id,
+          };
+        } else {
+          // Lower confidence: create as pending_review
+          db.prepare(`
+            INSERT INTO memories (id, type, content, tags, project, confidence, source_tool, source_excerpt, status, expires_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?)
+          `).run(id, input.type, input.content, tags, input.project ?? null,
+                 newConfidence, input.source_tool ?? null,
+                 input.source_excerpt ?? null, input.expires_at ?? null, now, now);
+
+          const row = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number | bigint };
+          db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(row.rowid), vecBuffer);
+
+          return {
+            memory: this.get(id)!,
+            conflict_action: 'created_pending_review',
+            conflicting_memory_id: conflict.id,
+          };
+        }
+      }
+    }
+
+    // No conflict: normal insert
     db.prepare(`
       INSERT INTO memories (id, type, content, tags, project, confidence, source_tool, source_excerpt, status, expires_at, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
@@ -32,7 +101,6 @@ export class MemoryStore {
            input.confidence ?? 0.8, input.source_tool ?? null,
            input.source_excerpt ?? null, input.expires_at ?? null, now, now);
 
-    // vec_memories 的 rowid 需要是整数，用 memories 表的 rowid
     const row = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number | bigint };
     db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(row.rowid), vecBuffer);
 
