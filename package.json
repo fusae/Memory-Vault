@@ -3,6 +3,27 @@
   "version": "0.1.0",
   "description": "MCP Memory Server - Your AI memory belongs to you",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/memoryvault/memory-vault"
+  },
+  "keywords": [
+    "mcp",
+    "memory",
+    "ai",
+    "llm",
+    "model-context-protocol",
+    "personal-ai"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "build",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "memory-vault": "./build/index.js",
     "memory-vault-cli": "./build/cli.js"
