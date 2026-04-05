@@ -34,7 +34,12 @@ git clone https://github.com/memoryvault/memory-vault.git
 cd memory-vault
 pnpm install
 pnpm build
+
+# Register CLI commands globally
+npm link
 ```
+
+After `npm link`, you can use `memory-vault-cli` directly from anywhere.
 
 ### 3. Basic Configuration (Local Only)
 
@@ -45,7 +50,7 @@ cp .env.example .env
 ### 4. Enable End-to-End Encryption (Optional)
 
 ```bash
-pnpm memory-vault-cli init-encryption
+memory-vault-cli init-encryption
 ```
 
 The command will auto-generate a strong passphrase by default (or enter `n` to set your own). After initialization, add the passphrase to your shell profile as instructed by the output.
@@ -54,15 +59,15 @@ The command will auto-generate a strong passphrase by default (or enter `n` to s
 
 ```bash
 # Provide your Supabase URL and Anon Key
-pnpm memory-vault-cli setup
+memory-vault-cli setup
 
 # Run scripts/setup-supabase.sql in your Supabase SQL Editor
 
 # Login via Magic Link
-pnpm memory-vault-cli auth login
+memory-vault-cli auth login
 
 # Sync
-pnpm memory-vault-cli sync
+memory-vault-cli sync
 ```
 
 ---
@@ -70,7 +75,7 @@ pnpm memory-vault-cli sync
 ## Web Dashboard
 
 ```bash
-pnpm dashboard
+memory-vault-dashboard
 ```
 
 Open `http://localhost:3080`. From here you can view your timeline, edit memories, check sync status, and monitor memory health.
@@ -130,25 +135,25 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```bash
 # Core Memory Management
-pnpm memory-vault-cli add "I prefer TypeScript" -t preference --tags "language,typescript"
-pnpm memory-vault-cli search "TypeScript"
-pnpm memory-vault-cli list
-pnpm memory-vault-cli get <id>
-pnpm memory-vault-cli delete <id>
+memory-vault-cli add "I prefer TypeScript" -t preference --tags "language,typescript"
+memory-vault-cli search "TypeScript"
+memory-vault-cli list
+memory-vault-cli get <id>
+memory-vault-cli delete <id>
 
 # AutoDream & Extraction
-pnpm memory-vault-cli organize --auto
-pnpm memory-vault-cli extract -f <transcript.jsonl>
+memory-vault-cli organize --auto
+memory-vault-cli extract -f <transcript.jsonl>
 
 # Auth & Sync
-pnpm memory-vault-cli auth login
-pnpm memory-vault-cli auth status
-pnpm memory-vault-cli sync
-pnpm memory-vault-cli sync --status
+memory-vault-cli auth login
+memory-vault-cli auth status
+memory-vault-cli sync
+memory-vault-cli sync --status
 
 # Export
-pnpm memory-vault-cli export
-pnpm memory-vault-cli export -f markdown
+memory-vault-cli export
+memory-vault-cli export -f markdown
 ```
 
 ---

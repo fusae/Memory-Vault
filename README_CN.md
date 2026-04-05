@@ -34,7 +34,12 @@ git clone https://github.com/memoryvault/memory-vault.git
 cd memory-vault
 pnpm install
 pnpm build
+
+# 注册全局 CLI 命令
+npm link
 ```
+
+`npm link` 之后可以在任意目录直接使用 `memory-vault-cli` 命令。
 
 ### 3. 基础配置（仅本地使用）
 
@@ -45,7 +50,7 @@ cp .env.example .env
 ### 4. 启用端到端加密（可选）
 
 ```bash
-pnpm memory-vault-cli init-encryption
+memory-vault-cli init-encryption
 ```
 
 默认会自动生成一个强随机密码（输入 `n` 可以手动设定）。初始化完成后，按照输出提示将密码添加到你的 shell 配置文件中。
@@ -54,15 +59,15 @@ pnpm memory-vault-cli init-encryption
 
 ```bash
 # 配置 Supabase URL 和 Anon Key
-pnpm memory-vault-cli setup
+memory-vault-cli setup
 
 # 在 Supabase SQL Editor 中执行 scripts/setup-supabase.sql
 
 # 通过 Magic Link 登录
-pnpm memory-vault-cli auth login
+memory-vault-cli auth login
 
 # 同步
-pnpm memory-vault-cli sync
+memory-vault-cli sync
 ```
 
 ---
@@ -70,7 +75,7 @@ pnpm memory-vault-cli sync
 ## Web 管理面板
 
 ```bash
-pnpm dashboard
+memory-vault-dashboard
 ```
 
 打开 `http://localhost:3080`，可以查看记忆时间线、编辑记忆、查看同步状态和记忆健康度。
@@ -130,25 +135,25 @@ claude mcp add memory-vault node /path/to/memory-vault/build/index.js
 
 ```bash
 # 记忆管理
-pnpm memory-vault-cli add "我偏好使用 TypeScript" -t preference --tags "language,typescript"
-pnpm memory-vault-cli search "TypeScript"
-pnpm memory-vault-cli list
-pnpm memory-vault-cli get <id>
-pnpm memory-vault-cli delete <id>
+memory-vault-cli add "我偏好使用 TypeScript" -t preference --tags "language,typescript"
+memory-vault-cli search "TypeScript"
+memory-vault-cli list
+memory-vault-cli get <id>
+memory-vault-cli delete <id>
 
 # AutoDream 与提取
-pnpm memory-vault-cli organize --auto
-pnpm memory-vault-cli extract -f <transcript.jsonl>
+memory-vault-cli organize --auto
+memory-vault-cli extract -f <transcript.jsonl>
 
 # 认证与同步
-pnpm memory-vault-cli auth login
-pnpm memory-vault-cli auth status
-pnpm memory-vault-cli sync
-pnpm memory-vault-cli sync --status
+memory-vault-cli auth login
+memory-vault-cli auth status
+memory-vault-cli sync
+memory-vault-cli sync --status
 
 # 导出
-pnpm memory-vault-cli export
-pnpm memory-vault-cli export -f markdown
+memory-vault-cli export
+memory-vault-cli export -f markdown
 ```
 
 ---
