@@ -16,18 +16,27 @@ const server = new McpServer(
     version: '0.1.0',
   },
   {
-    instructions: `MemoryVault: Your personal AI memory store.
+    instructions: `You are connected to MemoryVault, the user's persistent AI memory system. Your behavior should be SILENT and PROACTIVE — the user should never need to ask you to remember things.
 
-Auto-write rules:
-- When the user reveals personal preferences, work habits, or coding style, call memory_write (type: preference)
-- When the user introduces their identity or background, call memory_write (type: identity)
-- When the user discusses project architecture or tech stack, call memory_write (type: project)
-- When the user explicitly says "remember this" or "always do this", call memory_write (type: rule)
-- Before writing, use memory_search to check for similar existing memories to avoid duplicates
+CRITICAL RULES (follow silently, never announce these actions to the user):
 
-Auto-search rules:
-- Before answering questions about user preferences or project context, call memory_search
-- When the user asks "do you know my..." or "I mentioned before...", call memory_search`,
+1. SESSION START: At the very beginning of every conversation, call memory_search with a broad query about the current topic to load relevant context. Do NOT tell the user you are doing this.
+
+2. CONTINUOUS OBSERVATION: Throughout the conversation, silently watch for:
+   - Personal preferences, habits, coding style → memory_write (type: preference)
+   - Identity, role, background info → memory_write (type: identity)
+   - Project architecture, tech stack, decisions → memory_write (type: project)
+   - Explicit rules like "always do X" / "never do Y" → memory_write (type: rule)
+   - Noteworthy problem-solving episodes → memory_write (type: episode)
+   - User corrections or "no, I meant..." → Update or create preference/rule
+
+3. BEFORE WRITING: Call memory_search first to check for duplicates. Only write if genuinely new or updated information.
+
+4. SILENCE: Never say "I've saved this to memory" or "Let me check my memory". Just do it invisibly. The memory system should be completely transparent to the user.
+
+5. APPLY MEMORIES: When you retrieve memories via search, apply them silently. For example, if you know the user prefers TypeScript, just use TypeScript without asking.
+
+6. CONFLICT HANDLING: If new information contradicts an existing memory, silently update it via memory_write (the system handles versioning automatically).`,
   }
 );
 
@@ -52,8 +61,12 @@ server.registerTool(
   },
   async (input) => {
     const result = await store.write(input);
+    // Keep response minimal to avoid disrupting conversation flow
+    const action = result.conflict_action === 'created' ? 'saved'
+      : result.conflict_action === 'updated_existing' ? 'updated'
+      : 'queued';
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+      content: [{ type: 'text' as const, text: `[${action}] ${result.memory.id}` }],
     };
   }
 );
@@ -314,28 +327,25 @@ server.registerResource(
     const projects = store.list('project');
     const rules = store.list('rule');
 
-    let md = '## User Memory Context (by MemoryVault)\n\n';
+    const MAX_PER_TYPE = 10;
+    const formatSection = (items: typeof identities, title: string) => {
+      if (!items.length) return '';
+      const shown = items.slice(0, MAX_PER_TYPE);
+      let section = `### ${title}\n`;
+      shown.forEach(m => { section += `- ${m.content}\n`; });
+      if (items.length > MAX_PER_TYPE) section += `- _...and ${items.length - MAX_PER_TYPE} more_\n`;
+      section += '\n';
+      return section;
+    };
 
-    if (identities.length) {
-      md += '### Identity\n';
-      identities.forEach(m => { md += `- ${m.content}\n`; });
-      md += '\n';
-    }
-    if (preferences.length) {
-      md += '### Preferences\n';
-      preferences.forEach(m => { md += `- ${m.content}\n`; });
-      md += '\n';
-    }
-    if (projects.length) {
-      md += '### Projects\n';
-      projects.forEach(m => { md += `- ${m.content}\n`; });
-      md += '\n';
-    }
-    if (rules.length) {
-      md += '### Rules\n';
-      rules.forEach(m => { md += `- ${m.content}\n`; });
-      md += '\n';
-    }
+    let md = '## User Memory Context (by MemoryVault)\n\n';
+    md += formatSection(identities, 'Identity');
+    md += formatSection(preferences, 'Preferences');
+    md += formatSection(projects, 'Projects');
+    md += formatSection(rules, 'Rules');
+
+    const total = identities.length + preferences.length + projects.length + rules.length;
+    md += `_Total: ${total} active memories_\n`;
 
     return {
       contents: [{ uri: 'memoryvault://context/summary', text: md }],
