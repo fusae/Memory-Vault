@@ -2,7 +2,7 @@
 import 'dotenv/config';
 import os from 'node:os';
 import path from 'node:path';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { MemoryStore } from './memory-store.js';
@@ -274,6 +274,58 @@ server.registerResource(
   }
 );
 
+// ─── Resource Template: Project Memories ───
+server.registerResource(
+  'project-memories',
+  new ResourceTemplate('memoryvault://project/{name}', { list: undefined }),
+  {
+    title: 'Project Memories',
+    description: 'All memories associated with a specific project, grouped by type',
+    mimeType: 'text/markdown',
+  },
+  async (uri, { name }) => {
+    const memories = store.list(undefined, name as string);
+
+    const grouped: Record<string, typeof memories> = {};
+    for (const m of memories) {
+      const key = m.type;
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(m);
+    }
+
+    let md = `## Project: ${name}\n\n`;
+
+    const sections: [string, string][] = [
+      ['project', 'Architecture & Decisions'],
+      ['preference', 'Preferences'],
+      ['rule', 'Rules'],
+      ['identity', 'Identity'],
+      ['episode', 'Recent Episodes'],
+    ];
+
+    for (const [type, heading] of sections) {
+      const items = grouped[type];
+      if (items?.length) {
+        md += `### ${heading}\n`;
+        for (const m of items) {
+          md += `- ${m.content}`;
+          if (m.tags.length) md += ` [${m.tags.join(', ')}]`;
+          md += '\n';
+        }
+        md += '\n';
+      }
+    }
+
+    if (memories.length === 0) {
+      md += '_No memories found for this project._\n';
+    }
+
+    return {
+      contents: [{ uri: uri.href, text: md }],
+    };
+  }
+);
+
 // ─── Prompt: memory_extract ───
 server.registerPrompt(
   'memory_extract',
@@ -356,6 +408,66 @@ To soft-delete with a reason, call the memory_forget tool.
 Recent memories:
 
 ${memoriesList}`,
+          },
+        },
+      ],
+    };
+  }
+);
+
+// ─── Prompt: memory_organize ───
+server.registerPrompt(
+  'memory_organize',
+  {
+    title: 'Organize Memories',
+    description: 'Analyze all active memories and suggest consolidations, deduplication, and cleanup.',
+    argsSchema: {
+      project: z.string().optional().describe('Optional project filter'),
+    },
+  },
+  async ({ project }) => {
+    const memories = store.list(undefined, project as string | undefined);
+
+    const grouped: Record<string, typeof memories> = {};
+    for (const m of memories) {
+      if (!grouped[m.type]) grouped[m.type] = [];
+      grouped[m.type].push(m);
+    }
+
+    let memoriesList = '';
+    for (const [type, items] of Object.entries(grouped)) {
+      memoriesList += `\n### ${type} (${items.length})\n`;
+      for (const m of items) {
+        memoriesList += `- [${m.id}] ${m.content}`;
+        if (m.tags.length) memoriesList += ` [${m.tags.join(', ')}]`;
+        if (m.project) memoriesList += ` (project: ${m.project})`;
+        memoriesList += ` — confidence: ${m.confidence}, updated: ${m.updated_at}\n`;
+      }
+    }
+
+    return {
+      messages: [
+        {
+          role: 'user' as const,
+          content: {
+            type: 'text' as const,
+            text: `You are a memory organizer. Analyze the following active memories and suggest improvements.
+
+Tasks:
+1. Identify duplicates or near-duplicates that should be consolidated
+2. Suggest merging related memories into single, clearer entries
+3. Flag stale or contradictory memories
+4. Recommend setting expires_at on episode-type memories older than 30 days
+5. Identify low-confidence memories that should be reviewed
+
+For each suggestion, specify the action:
+- To merge: call memory_consolidate with the IDs and merged content
+- To update: call memory_update with the changes
+- To soft-delete: call memory_forget with the reason
+- To set expiration: call memory_update with expires_at
+
+Active memories:
+${memoriesList || '\n_No active memories found._'}`,
           },
         },
       ],
