@@ -38,6 +38,23 @@ export function createDatabase(dbPath: string): Database.Database {
     USING vec0(embedding float[${EMBEDDING_DIMENSIONS}])
   `);
 
+  // Migration: add expires_at column if missing
+  const columns = db.pragma('table_info(memories)') as { name: string }[];
+  if (!columns.some(c => c.name === 'expires_at')) {
+    db.exec('ALTER TABLE memories ADD COLUMN expires_at TEXT');
+  }
+
+  // Create memory_versions table for version history
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memory_versions (
+      id TEXT PRIMARY KEY,
+      memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    )
+  `);
+
   _db = db;
   return db;
 }
