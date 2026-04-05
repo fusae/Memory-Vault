@@ -96,7 +96,9 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 INDEX_PATH="$PROJECT_DIR/build/index.js"
 
 if command -v claude &>/dev/null; then
-  if ask_yn "Add MemoryVault to Claude Code?"; then
+  if claude mcp list 2>/dev/null | grep -q "memory-vault"; then
+    success "Claude Code (already configured)"
+  elif ask_yn "Add MemoryVault to Claude Code?"; then
     claude mcp add memory-vault node "$INDEX_PATH" 2>/dev/null && success "Added to Claude Code" || fail "Failed to add to Claude Code"
   else
     skip "Claude Code"
@@ -106,7 +108,9 @@ else
 fi
 
 if command -v codex &>/dev/null; then
-  if ask_yn "Add MemoryVault to Codex CLI?"; then
+  if codex mcp list 2>/dev/null | grep -q "memory-vault"; then
+    success "Codex CLI (already configured)"
+  elif ask_yn "Add MemoryVault to Codex CLI?"; then
     codex mcp add memory-vault -- node "$INDEX_PATH" 2>/dev/null && success "Added to Codex" || fail "Failed to add to Codex"
   else
     skip "Codex CLI"
@@ -118,7 +122,9 @@ fi
 # ─── Step 5: Encryption ───
 header "End-to-End Encryption" "Encrypt your memories with AES-256-GCM (optional)"
 
-if ask_yn "Enable encryption?"; then
+if [ -f "$HOME/.memoryvault/crypto-salt" ]; then
+  success "Encryption already configured"
+elif ask_yn "Enable encryption?"; then
   memory-vault-cli init-encryption
   success "Encryption configured"
 else
@@ -128,7 +134,15 @@ fi
 # ─── Step 6: Cloud Sync ───
 header "Cloud Sync via Supabase" "Sync encrypted memories across devices (optional)"
 
-if ask_yn "Set up cloud sync?"; then
+if [ -f "$HOME/.memoryvault/config.json" ] && grep -q "supabase_url" "$HOME/.memoryvault/config.json" 2>/dev/null; then
+  success "Supabase already configured"
+  if [ -f "$HOME/.memoryvault/session.json" ]; then
+    success "Already logged in"
+  elif ask_yn "Login now?"; then
+    memory-vault-cli auth login
+    success "Logged in"
+  fi
+elif ask_yn "Set up cloud sync?"; then
   echo ""
   echo "  You need a Supabase project. If you don't have one:"
   echo "  1. Go to https://supabase.com and sign up (free)"
