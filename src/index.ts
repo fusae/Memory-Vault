@@ -14,6 +14,7 @@ const store = new MemoryStore(DB_PATH);
 // ─── Auto-Sync Setup ───
 // Try to establish sync connection if user has configured Supabase + logged in
 let autoSync: { push: () => Promise<unknown> } | null = null;
+let syncFailed = false;
 
 async function initAutoSync() {
   try {
@@ -31,6 +32,21 @@ async function initAutoSync() {
     const { SyncService } = await import('./sync.js');
     autoSync = new SyncService(store, supabase, session.user.id);
   } catch { /* sync not available, continue without it */ }
+}
+
+async function backgroundSync(): Promise<string | null> {
+  if (!autoSync) return null;
+  try {
+    await autoSync.push();
+    syncFailed = false;
+    return null;
+  } catch {
+    if (!syncFailed) {
+      syncFailed = true;
+      return '[MemoryVault] Cloud sync failed. Session may have expired. Run: memory-vault-cli auth login';
+    }
+    return null; // Only warn once
+  }
 }
 
 // Fire and forget — don't block server startup
@@ -88,17 +104,15 @@ server.registerTool(
   async (input) => {
     const result = await store.write(input);
 
-    // Auto-sync in background if configured (fire and forget)
-    if (autoSync) {
-      autoSync.push().catch(() => {});
-    }
+    // Auto-sync in background if configured
+    const syncWarn = await backgroundSync();
 
-    // Keep response minimal to avoid disrupting conversation flow
     const action = result.conflict_action === 'created' ? 'saved'
       : result.conflict_action === 'updated_existing' ? 'updated'
       : 'queued';
+    const msg = syncWarn ? `[${action}] ${result.memory.id}\n${syncWarn}` : `[${action}] ${result.memory.id}`;
     return {
-      content: [{ type: 'text' as const, text: `[${action}] ${result.memory.id}` }],
+      content: [{ type: 'text' as const, text: msg }],
     };
   }
 );
@@ -155,7 +169,7 @@ server.registerTool(
   },
   async ({ id }) => {
     store.delete(id);
-    if (autoSync) autoSync.push().catch(() => {});
+    backgroundSync();
     return {
       content: [{ type: 'text' as const, text: `Memory ${id} deleted.` }],
     };
@@ -183,7 +197,7 @@ server.registerTool(
   },
   async (input) => {
     const memory = await store.update(input);
-    if (autoSync) autoSync.push().catch(() => {});
+    backgroundSync();
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(memory, null, 2) }],
     };
@@ -235,7 +249,7 @@ server.registerTool(
   },
   async ({ id, reason }) => {
     store.forget(id, reason);
-    if (autoSync) autoSync.push().catch(() => {});
+    backgroundSync();
     const memory = store.get(id);
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(memory, null, 2) }],
@@ -256,7 +270,7 @@ server.registerTool(
   },
   async ({ merge, into }) => {
     const memory = await store.consolidate(merge, into);
-    if (autoSync) autoSync.push().catch(() => {});
+    backgroundSync();
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(memory, null, 2) }],
     };
