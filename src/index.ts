@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import 'dotenv/config';
+import os from 'node:os';
+import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { MemoryStore } from './memory-store.js';
 
-const DB_PATH = process.env.MEMORY_DB_PATH ?? './data/memory.db';
+const DB_PATH = process.env.MEMORY_DB_PATH ?? path.join(os.homedir(), '.memoryvault', 'memory.db');
 const store = new MemoryStore(DB_PATH);
 
 const server = new McpServer(
@@ -14,18 +16,18 @@ const server = new McpServer(
     version: '0.1.0',
   },
   {
-    instructions: `MemoryVault: 用户的个人 AI 记忆库。
+    instructions: `MemoryVault: Your personal AI memory store.
 
-自动写入规则：
-- 当用户透露个人偏好、工作习惯或编程风格时，调用 memory_write（type: preference）
-- 当用户介绍自己的身份或背景时，调用 memory_write（type: identity）
-- 当用户讨论项目架构、技术选型时，调用 memory_write（type: project）
-- 当用户明确要求"记住这个"或"以后都这样做"时，调用 memory_write（type: rule）
-- 写入前先用 memory_search 检查是否已有类似记忆，避免重复
+Auto-write rules:
+- When the user reveals personal preferences, work habits, or coding style, call memory_write (type: preference)
+- When the user introduces their identity or background, call memory_write (type: identity)
+- When the user discusses project architecture or tech stack, call memory_write (type: project)
+- When the user explicitly says "remember this" or "always do this", call memory_write (type: rule)
+- Before writing, use memory_search to check for similar existing memories to avoid duplicates
 
-自动搜索规则：
-- 在回答用户问题前，如果问题涉及用户偏好或项目背景，先调用 memory_search
-- 当用户问"你知道我..."或"之前说过..."时，调用 memory_search`,
+Auto-search rules:
+- Before answering questions about user preferences or project context, call memory_search
+- When the user asks "do you know my..." or "I mentioned before...", call memory_search`,
   }
 );
 
@@ -34,22 +36,23 @@ server.registerTool(
   'memory_write',
   {
     title: 'Write Memory',
-    description: '将一条记忆写入用户的记忆库。当你观察到用户的偏好、习惯、项目背景、技术选型等值得长期记住的信息时调用。',
+    description: 'Write a memory to the user\'s memory store. Call when you observe preferences, habits, project context, or technical decisions worth remembering long-term.',
     inputSchema: z.object({
-      content: z.string().describe('记忆内容，用一句自然语言描述'),
+      content: z.string().describe('Memory content, described in one natural language sentence'),
       type: z.enum(['identity', 'preference', 'project', 'episode', 'rule']).describe(
-        'identity=用户身份, preference=偏好习惯, project=项目信息, episode=具体事件, rule=明确规则'
+        'identity=user identity, preference=habits/preferences, project=project info, episode=specific event, rule=explicit rule'
       ),
-      tags: z.array(z.string()).optional().describe('标签，如 ["typescript", "frontend"]'),
-      project: z.string().optional().describe('关联的项目名'),
-      confidence: z.number().min(0).max(1).optional().describe('置信度 0-1，默认 0.8'),
-      source_tool: z.string().optional().describe('来源工具，如 "claude-desktop", "cursor"'),
+      tags: z.array(z.string()).optional().describe('Tags, e.g. ["typescript", "frontend"]'),
+      project: z.string().optional().describe('Associated project name'),
+      confidence: z.number().min(0).max(1).optional().describe('Confidence 0-1, default 0.8'),
+      source_tool: z.string().optional().describe('Source tool, e.g. "claude-desktop", "cursor"'),
+      expires_at: z.string().optional().describe('ISO 8601 expiration date, optional'),
     }),
   },
   async (input) => {
-    const memory = await store.write(input);
+    const result = await store.write(input);
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify(memory, null, 2) }],
+      content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
     };
   }
 );
@@ -59,12 +62,12 @@ server.registerTool(
   'memory_search',
   {
     title: 'Search Memory',
-    description: '语义搜索用户的记忆库。在回答用户问题前调用，获取相关的历史上下文、偏好和项目信息。',
+    description: 'Semantic search the user\'s memory store. Call before answering questions to retrieve relevant context, preferences, and project information.',
     inputSchema: z.object({
-      query: z.string().describe('搜索查询，自然语言'),
-      type: z.enum(['identity', 'preference', 'project', 'episode', 'rule']).optional().describe('限定记忆类型'),
-      project: z.string().optional().describe('限定项目'),
-      limit: z.number().min(1).max(50).optional().describe('返回数量，默认 10'),
+      query: z.string().describe('Search query in natural language'),
+      type: z.enum(['identity', 'preference', 'project', 'episode', 'rule']).optional().describe('Filter by memory type'),
+      project: z.string().optional().describe('Filter by project'),
+      limit: z.number().min(1).max(50).optional().describe('Max results, default 10'),
     }),
   },
   async (input) => {
@@ -80,7 +83,7 @@ server.registerTool(
   'memory_list',
   {
     title: 'List Memories',
-    description: '列出用户的所有活跃记忆，可按类型和项目筛选。',
+    description: 'List all active memories, optionally filtered by type and project.',
     inputSchema: z.object({
       type: z.enum(['identity', 'preference', 'project', 'episode', 'rule']).optional(),
       project: z.string().optional(),
@@ -99,9 +102,9 @@ server.registerTool(
   'memory_delete',
   {
     title: 'Delete Memory',
-    description: '删除一条记忆。当用户明确要求遗忘某条信息时调用。',
+    description: 'Permanently delete a memory. Use when the user explicitly wants data removed. For soft-delete, use memory_forget instead.',
     inputSchema: z.object({
-      id: z.string().describe('要删除的记忆 ID'),
+      id: z.string().describe('Memory ID to delete'),
     }),
   },
   async ({ id }) => {
@@ -117,15 +120,17 @@ server.registerTool(
   'memory_update',
   {
     title: 'Update Memory',
-    description: '更新一条已有的记忆。当用户的偏好或项目信息发生变化时调用。',
+    description: 'Update an existing memory. Call when user preferences or project information change.',
     inputSchema: z.object({
-      id: z.string().describe('记忆 ID'),
-      content: z.string().optional().describe('新的记忆内容'),
+      id: z.string().describe('Memory ID'),
+      content: z.string().optional().describe('New memory content'),
       type: z.enum(['identity', 'preference', 'project', 'episode', 'rule']).optional(),
       tags: z.array(z.string()).optional(),
       project: z.string().optional(),
       confidence: z.number().min(0).max(1).optional(),
       status: z.enum(['active', 'archived', 'pending_review']).optional(),
+      reason: z.string().optional().describe('Reason for this update (stored in version history)'),
+      expires_at: z.string().optional().describe('ISO 8601 expiration date'),
     }),
   },
   async (input) => {
@@ -141,7 +146,7 @@ server.registerTool(
   'memory_export',
   {
     title: 'Export All Memories',
-    description: '导出用户的全部记忆数据（JSON 格式）。用于备份或迁移。',
+    description: 'Export all memory data as JSON. Use for backup or migration.',
     inputSchema: z.object({}),
   },
   async () => {
@@ -157,7 +162,7 @@ server.registerTool(
   'memory_export_markdown',
   {
     title: 'Export Memories as Markdown',
-    description: '将全部记忆导出为结构化的 Markdown 文档，方便用户保存和阅读。',
+    description: 'Export all memories as a structured Markdown document for reading or saving.',
     inputSchema: z.object({}),
   },
   async () => {
@@ -168,13 +173,70 @@ server.registerTool(
   }
 );
 
-// ─── Resource: 当前记忆上下文 ───
+// ─── Tool: memory_forget ───
+server.registerTool(
+  'memory_forget',
+  {
+    title: 'Forget Memory',
+    description: 'Soft-delete a memory by archiving it with a reason. The data is preserved unlike memory_delete. Use when a memory is outdated or no longer relevant.',
+    inputSchema: z.object({
+      id: z.string().describe('Memory ID to forget'),
+      reason: z.string().optional().describe('Why this memory is being forgotten'),
+    }),
+  },
+  async ({ id, reason }) => {
+    store.forget(id, reason);
+    const memory = store.get(id);
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(memory, null, 2) }],
+    };
+  }
+);
+
+// ─── Tool: memory_consolidate ───
+server.registerTool(
+  'memory_consolidate',
+  {
+    title: 'Consolidate Memories',
+    description: 'Merge multiple related memories into one. Archives the originals and creates a new consolidated memory.',
+    inputSchema: z.object({
+      merge: z.array(z.string()).describe('Array of memory IDs to merge'),
+      into: z.string().describe('The consolidated content for the new memory'),
+    }),
+  },
+  async ({ merge, into }) => {
+    const memory = await store.consolidate(merge, into);
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(memory, null, 2) }],
+    };
+  }
+);
+
+// ─── Tool: memory_versions ───
+server.registerTool(
+  'memory_versions',
+  {
+    title: 'Memory Version History',
+    description: 'Get the version history for a specific memory, showing all previous content and change reasons.',
+    inputSchema: z.object({
+      id: z.string().describe('Memory ID to get version history for'),
+    }),
+  },
+  async ({ id }) => {
+    const versions = store.getVersions(id);
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(versions, null, 2) }],
+    };
+  }
+);
+
+// ─── Resource: Memory Context Summary ───
 server.registerResource(
   'memory-context',
   'memoryvault://context/summary',
   {
     title: 'Memory Context Summary',
-    description: '用户记忆库的概览摘要，包含身份、偏好和活跃项目信息',
+    description: 'Overview of the user\'s memory store including identity, preferences, and active project information',
     mimeType: 'text/markdown',
   },
   async () => {
@@ -212,14 +274,14 @@ server.registerResource(
   }
 );
 
-// ─── Prompt: memory_extract (记忆提炼) ───
+// ─── Prompt: memory_extract ───
 server.registerPrompt(
   'memory_extract',
   {
     title: 'Extract Memories from Conversation',
-    description: '分析对话内容，提取值得长期记住的用户信息。在对话结束时调用。',
+    description: 'Analyze conversation content and extract information worth remembering long-term. Call at the end of a conversation.',
     argsSchema: {
-      conversation: z.string().describe('要分析的对话内容'),
+      conversation: z.string().describe('The conversation content to analyze'),
     },
   },
   async ({ conversation }) => ({
@@ -228,27 +290,27 @@ server.registerPrompt(
         role: 'user' as const,
         content: {
           type: 'text' as const,
-          text: `你是一个记忆提炼引擎。分析以下用户与 AI 的对话记录，提取值得长期记住的信息。
+          text: `You are a memory extraction engine. Analyze the following conversation between a user and an AI, and extract information worth remembering long-term.
 
-提取规则：
-1. 只提取"跨会话有价值"的信息，忽略一次性的具体问题
-2. 关注用户的偏好、习惯、纠正行为和反复出现的模式
-3. 关注项目层面的架构决策和技术选型
-4. 忽略通用知识（如"React 是一个前端框架"）
-5. 如果信息不确定，设置较低的 confidence（0.5-0.6）
+Extraction rules:
+1. Only extract information that has "cross-session value" — ignore one-off questions
+2. Focus on user preferences, habits, corrections, and recurring patterns
+3. Focus on project-level architecture decisions and tech stack choices
+4. Ignore general knowledge (e.g. "React is a frontend framework")
+5. If information is uncertain, set lower confidence (0.5-0.6)
 
-对于每一条提取的记忆，请调用 memory_write 工具写入，参数说明：
-- type: identity（用户身份）| preference（偏好习惯）| project（项目信息）| episode（具体事件）| rule（明确规则）
-- content: 一句自然语言描述
-- confidence: 0.0-1.0，根据信息确定程度设置
-- tags: 相关标签数组
-- project: 如果与特定项目相关，填写项目名
+For each extracted memory, call the memory_write tool with these parameters:
+- type: identity (user identity) | preference (habits/preferences) | project (project info) | episode (specific event) | rule (explicit rule)
+- content: One natural language sentence
+- confidence: 0.0-1.0, based on certainty
+- tags: Array of relevant tags
+- project: Project name if related to a specific project
 
-如果对话中没有值得记忆的信息，请说明"本次对话无需提取记忆"。
+If there is nothing worth remembering, say "No memories to extract from this conversation."
 
 ---
 
-以下是对话内容：
+Conversation:
 
 ${conversation}`,
         },
@@ -257,14 +319,14 @@ ${conversation}`,
   })
 );
 
-// ─── Prompt: memory_review (记忆审阅) ───
+// ─── Prompt: memory_review ───
 server.registerPrompt(
   'memory_review',
   {
     title: 'Review Recent Memories',
-    description: '审阅最近存储的记忆，确认、修改或删除不准确的条目。',
+    description: 'Review recently stored memories to confirm, modify, or delete inaccurate entries.',
     argsSchema: {
-      days: z.number().optional().describe('审阅最近多少天的记忆，默认 7 天'),
+      days: z.number().optional().describe('Review memories from the last N days, default 7'),
     },
   },
   async ({ days }) => {
@@ -277,7 +339,7 @@ server.registerPrompt(
       ? recent.map(m =>
           `- [${m.id}] (${m.type}) ${m.content}${m.tags.length ? ` [${m.tags.join(', ')}]` : ''}${m.project ? ` (project: ${m.project})` : ''} — confidence: ${m.confidence}`
         ).join('\n')
-      : '（最近没有新增记忆）';
+      : '(No recent memories found)';
 
     return {
       messages: [
@@ -285,12 +347,13 @@ server.registerPrompt(
           role: 'user' as const,
           content: {
             type: 'text' as const,
-            text: `请帮我审阅最近 ${days ?? 7} 天的记忆。对于每条记忆，请判断是否准确，并建议保留、修改或删除。
+            text: `Please review the memories from the last ${days ?? 7} days. For each memory, assess whether it is accurate and suggest keeping, modifying, or deleting it.
 
-如需修改，请调用 memory_update 工具。
-如需删除，请调用 memory_delete 工具。
+To modify, call the memory_update tool.
+To delete, call the memory_delete tool.
+To soft-delete with a reason, call the memory_forget tool.
 
-以下是最近的记忆条目：
+Recent memories:
 
 ${memoriesList}`,
           },
@@ -300,7 +363,7 @@ ${memoriesList}`,
   }
 );
 
-// ─── 启动 ───
+// ─── Start ───
 if (process.env.NODE_ENV !== 'test') {
   const transport = new StdioServerTransport();
   await server.connect(transport);
