@@ -65,9 +65,16 @@ memory-vault-cli setup
 
 # Login via Magic Link
 memory-vault-cli auth login
+```
 
-# Sync
-memory-vault-cli sync
+Once logged in, memories are **automatically synced** to the cloud after every write, update, or delete. No manual sync needed. If your session expires, you'll see a one-time warning — just run `memory-vault-cli auth login` again.
+
+You can also sync manually or check status:
+
+```bash
+memory-vault-cli sync --status   # Check sync status
+memory-vault-cli sync            # Manual full sync (push + pull)
+memory-vault-cli sync --pull     # Pull from cloud (e.g. on a new device)
 ```
 
 ---

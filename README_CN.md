@@ -65,9 +65,16 @@ memory-vault-cli setup
 
 # 通过 Magic Link 登录
 memory-vault-cli auth login
+```
 
-# 同步
-memory-vault-cli sync
+登录后，每次写入、更新或删除记忆时会**自动同步**到云端，无需手动操作。如果 session 过期，会看到一次提示 — 重新执行 `memory-vault-cli auth login` 即可。
+
+也可以手动同步或查看状态：
+
+```bash
+memory-vault-cli sync --status   # 查看同步状态
+memory-vault-cli sync            # 手动全量同步（推送 + 拉取）
+memory-vault-cli sync --pull     # 从云端拉取（如换设备时使用）
 ```
 
 ---
