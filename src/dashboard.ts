@@ -8,8 +8,9 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { MemoryStore } from './memory-store.js';
 import { dashboardApi } from './dashboard-api.js';
+import { getMemoryDbPath } from './path-utils.js';
 
-const DB_PATH = process.env.MEMORY_DB_PATH ?? path.join(os.homedir(), '.memoryvault', 'memory.db');
+const DB_PATH = getMemoryDbPath();
 const PORT = parseInt(process.env.DASHBOARD_PORT ?? '3080', 10);
 
 const store = new MemoryStore(DB_PATH);

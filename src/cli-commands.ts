@@ -5,8 +5,9 @@ import { MemoryStore } from './memory-store.js';
 import { AuthService } from './auth.js';
 import { getSupabaseClient, createSupabaseClient } from './supabase.js';
 import type { MemoryType } from './types.js';
+import { getMemoryDbPath } from './path-utils.js';
 
-const DB_PATH = process.env.MEMORY_DB_PATH ?? path.join(os.homedir(), '.memoryvault', 'memory.db');
+const DB_PATH = getMemoryDbPath();
 
 let _store: MemoryStore | null = null;
 function getStore(): MemoryStore {
@@ -131,6 +132,24 @@ export function organizeMemories(opts: { auto?: boolean; project?: string }) {
   }
 }
 
+function extractTranscriptText(content: unknown): string {
+  if (typeof content === 'string') return content;
+
+  if (!Array.isArray(content)) return '';
+
+  return content
+    .flatMap(block => {
+      if (!block || typeof block !== 'object') return [];
+
+      const candidate = block as { type?: unknown; text?: unknown };
+      if (candidate.type !== 'text' || typeof candidate.text !== 'string') return [];
+
+      return [candidate.text];
+    })
+    .join('\n')
+    .trim();
+}
+
 export async function extractMemories(opts: { file?: string; transcript?: boolean }) {
   let conversation: string;
 
@@ -145,15 +164,16 @@ export async function extractMemories(opts: { file?: string; transcript?: boolea
       for (const line of lines) {
         try {
           const obj = JSON.parse(line);
-          if (obj.type === 'user' && obj.content) {
-            messages.push(`User: ${obj.content}`);
-          } else if (obj.type === 'assistant' && obj.content) {
-            // content can be string or array of content blocks
-            const text = typeof obj.content === 'string'
-              ? obj.content
-              : (Array.isArray(obj.content)
-                ? obj.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n')
-                : '');
+          if (obj.isMeta) continue;
+
+          const role = obj.message?.role;
+          const content = obj.message?.content ?? obj.content;
+
+          if (obj.type === 'user' && role === 'user') {
+            const text = extractTranscriptText(content);
+            if (text) messages.push(`User: ${text}`);
+          } else if (obj.type === 'assistant' && role === 'assistant') {
+            const text = extractTranscriptText(content);
             if (text) messages.push(`Assistant: ${text}`);
           }
         } catch { /* skip malformed lines */ }

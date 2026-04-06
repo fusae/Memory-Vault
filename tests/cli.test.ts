@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { closeDatabase } from '../src/db.js';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // Mock embedding
 vi.mock('../src/embedding.js', () => ({
@@ -14,6 +16,7 @@ vi.mock('../src/embedding.js', () => ({
 }));
 
 const TEST_DB = './data/test-cli.db';
+const TEST_TRANSCRIPT = './data/test-transcript.jsonl';
 
 describe('CLI commands', () => {
   beforeEach(() => {
@@ -23,6 +26,7 @@ describe('CLI commands', () => {
   afterEach(() => {
     closeDatabase();
     if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+    if (fs.existsSync(TEST_TRANSCRIPT)) fs.unlinkSync(TEST_TRANSCRIPT);
     delete process.env.MEMORY_DB_PATH;
     // Clear module cache so the store re-initializes with the new env
     vi.resetModules();
@@ -122,5 +126,52 @@ describe('CLI commands', () => {
     expect(output).toContain('md export test');
 
     logSpy.mockRestore();
+  });
+
+  it('should extract memories from Claude Code transcript jsonl', async () => {
+    const { extractMemories } = await import('../src/cli-commands.js');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    fs.writeFileSync(
+      TEST_TRANSCRIPT,
+      [
+        JSON.stringify({
+          type: 'user',
+          message: {
+            role: 'user',
+            content: 'I prefer concise technical writing.',
+          },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'internal' },
+              { type: 'text', text: 'Understood. I will keep responses concise.' },
+              { type: 'tool_use', name: 'memory_write', input: {} },
+            ],
+          },
+        }),
+      ].join('\n')
+    );
+
+    await extractMemories({ file: TEST_TRANSCRIPT });
+
+    const output = logSpy.mock.calls[0][0] as string;
+    expect(output).toContain('User: I prefer concise technical writing.');
+    expect(output).toContain('Assistant: Understood. I will keep responses concise.');
+    expect(output).not.toContain('thinking');
+    expect(output).not.toContain('tool_use');
+
+    logSpy.mockRestore();
+  });
+
+  it('should expand tilde in MEMORY_DB_PATH', async () => {
+    const { getMemoryDbPath } = await import('../src/path-utils.js');
+
+    expect(getMemoryDbPath('~/.memoryvault/memory.db')).toBe(
+      path.join(os.homedir(), '.memoryvault', 'memory.db')
+    );
   });
 });

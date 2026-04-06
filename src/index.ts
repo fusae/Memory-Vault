@@ -7,8 +7,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { MemoryStore } from './memory-store.js';
 import { AuthService } from './auth.js';
+import { getMemoryDbPath } from './path-utils.js';
 
-const DB_PATH = process.env.MEMORY_DB_PATH ?? path.join(os.homedir(), '.memoryvault', 'memory.db');
+const DB_PATH = getMemoryDbPath();
 const store = new MemoryStore(DB_PATH);
 
 // ─── Auto-Sync Setup ───
