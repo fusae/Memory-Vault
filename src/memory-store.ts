@@ -171,6 +171,10 @@ export class MemoryStore {
     const db = getDatabase();
     const limit = input.limit ?? 10;
 
+    // vec0 MATCH query fails on empty table — return early
+    const vecCount = (db.prepare('SELECT COUNT(*) as count FROM vec_memories').get() as { count: number }).count;
+    if (vecCount === 0) return [];
+
     const queryEmbedding = await getEmbedding(input.query);
     const vecBuffer = Buffer.from(new Float32Array(queryEmbedding).buffer);
 
