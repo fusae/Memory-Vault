@@ -9,6 +9,7 @@ import {
   deleteMemory,
   exportMemories,
   organizeMemories,
+  synthesizeMemories,
   extractMemories,
   authLogin,
   authStatus,
@@ -71,6 +72,14 @@ program
   .option('--auto', 'Automatically execute safe cleanup actions')
   .option('--project <project>', 'Only organize memories for this project')
   .action(organizeMemories);
+
+program
+  .command('synthesize')
+  .description('Synthesize recent memories: find duplicates, contradictions, untagged, and low-value entries')
+  .option('--hours <hours>', 'Time range in hours (default: 24)')
+  .option('--project <project>', 'Only synthesize memories for this project')
+  .option('--dry-run', 'Report only, do not execute auto-cleanup')
+  .action(synthesizeMemories);
 
 program
   .command('extract')

@@ -132,6 +132,123 @@ export function organizeMemories(opts: { auto?: boolean; project?: string }) {
   }
 }
 
+export function synthesizeMemories(opts: { hours?: string; project?: string; dryRun?: boolean }) {
+  const store = getStore();
+  const hours = opts.hours ? parseInt(opts.hours, 10) : 24;
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+  const recent = store.getRecentMemories(since);
+
+  console.log(`=== MemoryVault Synthesis Report ===\n`);
+  console.log(`Time range: last ${hours} hours (since ${since.toISOString()})`);
+  console.log(`Recent memories found: ${recent.length}\n`);
+
+  if (recent.length === 0) {
+    console.log('No recent memories to synthesize.');
+    return;
+  }
+
+  // Phase 1: Find memories missing tags
+  const untagged = recent.filter(m => m.tags.length === 0);
+  if (untagged.length > 0) {
+    console.log(`--- Untagged memories: ${untagged.length} ---`);
+    for (const m of untagged) {
+      console.log(`  [${m.id}] (${m.type}) ${m.content}`);
+    }
+    console.log('');
+  }
+
+  // Phase 2: Find potential duplicates (same type, similar content keywords)
+  const duplicateGroups: { ids: string[]; contents: string[] }[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < recent.length; i++) {
+    if (seen.has(recent[i].id)) continue;
+    const group = [recent[i]];
+    for (let j = i + 1; j < recent.length; j++) {
+      if (seen.has(recent[j].id)) continue;
+      if (recent[i].type !== recent[j].type) continue;
+      // Simple keyword overlap heuristic
+      const words1 = new Set(recent[i].content.toLowerCase().split(/\s+/));
+      const words2 = new Set(recent[j].content.toLowerCase().split(/\s+/));
+      const overlap = [...words1].filter(w => words2.has(w) && w.length > 3).length;
+      const minSize = Math.min(words1.size, words2.size);
+      if (minSize > 0 && overlap / minSize > 0.5) {
+        group.push(recent[j]);
+        seen.add(recent[j].id);
+      }
+    }
+    if (group.length > 1) {
+      seen.add(recent[i].id);
+      duplicateGroups.push({
+        ids: group.map(m => m.id),
+        contents: group.map(m => m.content),
+      });
+    }
+  }
+  if (duplicateGroups.length > 0) {
+    console.log(`--- Potential duplicate groups: ${duplicateGroups.length} ---`);
+    for (const g of duplicateGroups) {
+      console.log(`  Group (${g.ids.length} memories):`);
+      for (let i = 0; i < g.ids.length; i++) {
+        console.log(`    [${g.ids[i]}] ${g.contents[i]}`);
+      }
+    }
+    console.log('');
+  }
+
+  // Phase 3: Find contradictions (same type, same project, different confidence)
+  const byTypeProject = new Map<string, typeof recent>();
+  for (const m of recent) {
+    const key = `${m.type}:${m.project ?? ''}`;
+    if (!byTypeProject.has(key)) byTypeProject.set(key, []);
+    byTypeProject.get(key)!.push(m);
+  }
+
+  let contradictionCount = 0;
+  for (const [, group] of byTypeProject) {
+    if (group.length < 2) continue;
+    const confidences = group.map(m => m.confidence);
+    const maxConf = Math.max(...confidences);
+    const minConf = Math.min(...confidences);
+    if (maxConf - minConf > 0.3) {
+      if (contradictionCount === 0) console.log(`--- Potential contradictions ---`);
+      contradictionCount++;
+      for (const m of group) {
+        console.log(`  [${m.id}] (${m.type}) conf=${m.confidence} — ${m.content}`);
+      }
+      console.log('');
+    }
+  }
+
+  // Phase 4: Find low-value memories
+  const lowValue = recent.filter(m => m.confidence < 0.5 && m.confirmation_count === 0);
+  if (lowValue.length > 0) {
+    console.log(`--- Low-value memories (low confidence, unconfirmed): ${lowValue.length} ---`);
+    for (const m of lowValue) {
+      console.log(`  [${m.id}] (${m.type}) conf=${m.confidence} — ${m.content}`);
+    }
+    console.log('');
+  }
+
+  // Auto-execute safe actions if not dry run
+  if (!opts.dryRun) {
+    const result = store.autoOrganize(opts.project);
+    console.log(`=== Auto-Organize Results ===\n`);
+    console.log(`Set expires_at on ${result.expiredCount} stale episode(s)`);
+    console.log(`Archived ${result.archivedCount} very low confidence memory(ies)`);
+  } else {
+    console.log('Dry run mode — no changes made. Remove --dry-run to execute auto-actions.');
+  }
+
+  // Summary
+  console.log(`\n=== Summary ===`);
+  console.log(`Untagged: ${untagged.length}`);
+  console.log(`Duplicate groups: ${duplicateGroups.length}`);
+  console.log(`Low-value: ${lowValue.length}`);
+  console.log(`\nFor deeper analysis (merging duplicates, resolving contradictions),`);
+  console.log(`run: memory-vault-cli organize --auto`);
+}
+
 function extractTranscriptText(content: unknown): string {
   if (typeof content === 'string') return content;
 

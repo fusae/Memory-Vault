@@ -513,6 +513,15 @@ export class MemoryStore {
     };
   }
 
+  getRecentMemories(since: Date): MemoryEntry[] {
+    const db = getDatabase();
+    const sinceStr = since.toISOString();
+    const rows = db.prepare(
+      "SELECT * FROM memories WHERE updated_at >= ? AND status IN ('active', 'pending_review') ORDER BY updated_at DESC"
+    ).all(sinceStr) as (MemoryEntry & { tags: string })[];
+    return rows.map(row => this.decryptRow(row));
+  }
+
   export(): MemoryEntry[] {
     const db = getDatabase();
     const rows = db.prepare('SELECT * FROM memories ORDER BY created_at').all() as (MemoryEntry & { tags: string })[];
