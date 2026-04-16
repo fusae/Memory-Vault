@@ -108,7 +108,8 @@ export class SyncService {
           .eq('id', m.remote_id);
         if (error) throw error;
 
-        db.prepare("UPDATE memories SET sync_status = 'synced', last_synced_at = ? WHERE id = ?").run(now, m.id);
+        // Remote deletion succeeded — physically remove local row
+        db.prepare('DELETE FROM memories WHERE id = ?').run(m.id);
         pushed++;
       } catch (e: unknown) {
         errors.push(`Delete ${m.id}: ${(e as Error).message}`);

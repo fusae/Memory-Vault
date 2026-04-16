@@ -401,10 +401,19 @@ export class MemoryStore {
 
   delete(id: string): void {
     const db = getDatabase();
-    const row = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number | bigint } | undefined;
+    const row = db.prepare('SELECT rowid, sync_status, remote_id FROM memories WHERE id = ?').get(id) as { rowid: number | bigint; sync_status: string; remote_id: string | null } | undefined;
     if (row) {
+      // Always remove the vector
       db.prepare('DELETE FROM vec_memories WHERE rowid = ?').run(Number(row.rowid));
-      db.prepare('DELETE FROM memories WHERE id = ?').run(id);
+
+      if (row.remote_id) {
+        // Has been synced to cloud — mark as deleted so push() can propagate
+        const now = new Date().toISOString();
+        db.prepare("UPDATE memories SET sync_status = 'deleted', status = 'archived', updated_at = ? WHERE id = ?").run(now, id);
+      } else {
+        // Never synced — safe to physically delete
+        db.prepare('DELETE FROM memories WHERE id = ?').run(id);
+      }
     }
   }
 
