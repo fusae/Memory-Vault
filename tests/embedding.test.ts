@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getEmbedding } from '../src/embedding.js';
+import { getEmbedding, OllamaUnavailableError } from '../src/embedding.js';
 
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
@@ -24,13 +24,21 @@ describe('getEmbedding', () => {
     await expect(getEmbedding('')).rejects.toThrow();
   });
 
-  it('should throw on Ollama error', async () => {
+  it('should throw OllamaUnavailableError on HTTP error', async () => {
     mockFetch.mockResolvedValue({
       ok: false,
       status: 500,
       statusText: 'Internal Server Error',
     });
 
-    await expect(getEmbedding('test')).rejects.toThrow('Ollama embedding failed');
+    await expect(getEmbedding('test')).rejects.toThrow(OllamaUnavailableError);
+    await expect(getEmbedding('test')).rejects.toThrow('Ollama embedding service not available');
+  });
+
+  it('should throw OllamaUnavailableError on connection failure', async () => {
+    mockFetch.mockRejectedValue(new Error('fetch failed'));
+
+    await expect(getEmbedding('test')).rejects.toThrow(OllamaUnavailableError);
+    await expect(getEmbedding('test')).rejects.toThrow('ollama pull nomic-embed-text');
   });
 });

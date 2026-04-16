@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createDatabase, getDatabase } from './db.js';
-import { getEmbedding } from './embedding.js';
+import { getEmbedding, OllamaUnavailableError } from './embedding.js';
 import type { CryptoService } from './crypto.js';
 import type {
   MemoryEntry,
@@ -175,7 +175,16 @@ export class MemoryStore {
     const vecCount = (db.prepare('SELECT COUNT(*) as count FROM vec_memories').get() as { count: number }).count;
     if (vecCount === 0) return [];
 
-    const queryEmbedding = await getEmbedding(input.query);
+    let queryEmbedding: number[];
+    try {
+      queryEmbedding = await getEmbedding(input.query);
+    } catch (err: unknown) {
+      if (err instanceof OllamaUnavailableError) {
+        // Fallback to keyword search when Ollama is not available
+        return this.keywordSearch(input);
+      }
+      throw err;
+    }
     const vecBuffer = Buffer.from(new Float32Array(queryEmbedding).buffer);
 
     // vec0 KNN 查询要求 k = ? 在 WHERE 子句里，不能用外层 LIMIT 替代
@@ -211,6 +220,44 @@ export class MemoryStore {
     return rows.map(row => ({
       ...this.decryptRow(row),
       distance: row.distance,
+    }));
+  }
+
+  private keywordSearch(input: SearchMemoryInput): MemorySearchResult[] {
+    const db = getDatabase();
+    const limit = input.limit ?? 10;
+    const keywords = input.query.toLowerCase().split(/\s+/).filter(Boolean);
+    if (keywords.length === 0) return [];
+
+    // Build LIKE conditions for each keyword against content
+    const likeClauses = keywords.map(() => 'LOWER(m.content) LIKE ?');
+    const likeParams = keywords.map(k => `%${k}%`);
+
+    let sql = `
+      SELECT m.* FROM memories m
+      WHERE m.status = 'active'
+        AND (m.expires_at IS NULL OR m.expires_at > ?)
+        AND (${likeClauses.join(' OR ')})
+    `;
+    const params: unknown[] = [new Date().toISOString(), ...likeParams];
+
+    if (input.type) {
+      sql += ' AND m.type = ?';
+      params.push(input.type);
+    }
+    if (input.project) {
+      sql += ' AND m.project = ?';
+      params.push(input.project);
+    }
+
+    sql += ' ORDER BY m.updated_at DESC LIMIT ?';
+    params.push(limit);
+
+    const rows = db.prepare(sql).all(...params) as (MemoryEntry & { tags: string })[];
+
+    return rows.map(row => ({
+      ...this.decryptRow(row),
+      distance: -1, // indicates keyword fallback, not vector distance
     }));
   }
 
