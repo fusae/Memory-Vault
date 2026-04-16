@@ -6,11 +6,19 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { MemoryStore } from './memory-store.js';
+import { CryptoService } from './crypto.js';
 import { AuthService } from './auth.js';
 import { getMemoryDbPath } from './path-utils.js';
 
 const DB_PATH = getMemoryDbPath();
-const store = new MemoryStore(DB_PATH);
+
+// Initialize E2EE if passphrase is configured
+const passphrase = process.env.MEMORYVAULT_PASSPHRASE;
+const crypto = passphrase ? new CryptoService(passphrase) : undefined;
+if (crypto) {
+  console.error('[MemoryVault] E2EE encryption enabled');
+}
+const store = new MemoryStore(DB_PATH, crypto);
 
 // ─── Auto-Sync Setup ───
 // Try to establish sync connection if user has configured Supabase + logged in
