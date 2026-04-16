@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getDatabase } from './db.js';
+import { getEmbedding } from './embedding.js';
 import type { MemoryStore } from './memory-store.js';
 import type { MemoryEntry } from './types.js';
 
@@ -189,6 +190,29 @@ export class SyncService {
       }
     } catch (e: unknown) {
       errors.push(`Pull: ${(e as Error).message}`);
+    }
+
+    // Generate embeddings for pulled memories that are missing vectors
+    if (pulled > 0) {
+      const missingVec = db.prepare(`
+        SELECT m.id, m.rowid FROM memories m
+        LEFT JOIN vec_memories v ON m.rowid = v.rowid
+        WHERE v.rowid IS NULL AND m.status != 'archived'
+      `).all() as { id: string; rowid: number | bigint }[];
+
+      for (const row of missingVec) {
+        try {
+          // Use store.get() which handles decryption
+          const memory = this.store.get(row.id);
+          if (!memory) continue;
+
+          const embedding = await getEmbedding(memory.content);
+          const vecBuffer = Buffer.from(new Float32Array(embedding).buffer);
+          db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(row.rowid), vecBuffer);
+        } catch (e: unknown) {
+          errors.push(`Embed ${row.id}: ${(e as Error).message}`);
+        }
+      }
     }
 
     return { pushed: 0, pulled, errors };
