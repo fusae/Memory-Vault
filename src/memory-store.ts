@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { createDatabase, getDatabase } from './db.js';
 import { getEmbedding, OllamaUnavailableError } from './embedding.js';
 import type { CryptoService } from './crypto.js';
@@ -16,10 +18,46 @@ const CONFLICT_DISTANCE_THRESHOLD = 0.3;
 
 export class MemoryStore {
   private crypto?: CryptoService;
+  private dbPath: string;
 
   constructor(dbPath: string, crypto?: CryptoService) {
     createDatabase(dbPath);
     this.crypto = crypto;
+    this.dbPath = dbPath;
+  }
+
+  private getLogPath(): string {
+    const logDir = join(dirname(this.dbPath), 'logs');
+    if (!existsSync(logDir)) {
+      mkdirSync(logDir, { recursive: true });
+    }
+    return join(logDir, 'consolidate.log');
+  }
+
+  private logConsolidation(mergeIds: string[], memories: MemoryEntry[], intoContent: string, success: boolean, error?: string): void {
+    const timestamp = new Date().toISOString();
+    const logEntry = {
+      timestamp,
+      action: 'consolidate',
+      success,
+      merge_ids: mergeIds,
+      memories: memories.map(m => ({
+        id: m.id,
+        type: m.type,
+        content: m.content,
+        confidence: m.confidence,
+      })),
+      merged_content: intoContent,
+      error: error || null,
+    };
+
+    try {
+      const logPath = this.getLogPath();
+      appendFileSync(logPath, JSON.stringify(logEntry) + '\n', 'utf-8');
+    } catch (err) {
+      // Log failure shouldn't break the operation
+      console.error('Failed to write consolidation log:', err);
+    }
   }
 
   private encryptField(value: string): string {
@@ -383,20 +421,38 @@ export class MemoryStore {
       return m;
     });
 
-    // Create the merged memory using the first memory's type
-    const result = await this.write({
-      content: intoContent,
-      type: memories[0].type,
-      tags: [...new Set(memories.flatMap(m => m.tags))],
-      project: memories[0].project,
-    });
-
-    // Archive all original memories
-    for (const m of memories) {
-      this.forget(m.id, 'consolidated');
+    // Check confidence threshold - only merge high-confidence memories
+    const lowConfidence = memories.filter(m => m.confidence < 0.8);
+    if (lowConfidence.length > 0) {
+      const error = `Cannot consolidate: ${lowConfidence.length} memory(ies) have confidence < 0.8. ` +
+        `Low confidence IDs: ${lowConfidence.map(m => m.id).join(', ')}`;
+      this.logConsolidation(mergeIds, memories, intoContent, false, error);
+      throw new Error(error);
     }
 
-    return result.memory;
+    try {
+      // Create the merged memory using the first memory's type
+      const result = await this.write({
+        content: intoContent,
+        type: memories[0].type,
+        tags: [...new Set(memories.flatMap(m => m.tags))],
+        project: memories[0].project,
+      });
+
+      // Archive all original memories
+      for (const m of memories) {
+        this.forget(m.id, 'consolidated');
+      }
+
+      // Log successful consolidation
+      this.logConsolidation(mergeIds, memories, intoContent, true);
+
+      return result.memory;
+    } catch (err: unknown) {
+      const error = err as Error;
+      this.logConsolidation(mergeIds, memories, intoContent, false, error.message);
+      throw err;
+    }
   }
 
   delete(id: string): void {
@@ -520,6 +576,51 @@ export class MemoryStore {
       "SELECT * FROM memories WHERE updated_at >= ? AND status IN ('active', 'pending_review') ORDER BY updated_at DESC"
     ).all(sinceStr) as (MemoryEntry & { tags: string })[];
     return rows.map(row => this.decryptRow(row));
+  }
+
+  async findDuplicateClusters(type?: string, similarityThreshold: number = 18.0): Promise<MemoryEntry[][]> {
+    const db = getDatabase();
+    const vecCount = (db.prepare('SELECT COUNT(*) as count FROM vec_memories').get() as { count: number }).count;
+    if (vecCount === 0) return [];
+
+    const memories = this.list(type);
+    if (memories.length < 2) return [];
+
+    const clusters: MemoryEntry[][] = [];
+    const processed = new Set<string>();
+
+    for (const memory of memories) {
+      if (processed.has(memory.id)) continue;
+
+      // Find similar memories using vector search
+      const embedding = await getEmbedding(memory.content);
+      const vecBuffer = Buffer.from(new Float32Array(embedding).buffer);
+
+      const sql = `
+        SELECT m.*, sub.distance
+        FROM (
+          SELECT rowid, distance FROM vec_memories
+          WHERE embedding MATCH ? AND k = 10
+        ) sub
+        INNER JOIN memories m ON m.rowid = sub.rowid
+        WHERE m.status = 'active'
+          AND m.id != ?
+          AND m.type = ?
+      `;
+      const similar = db.prepare(sql).all(vecBuffer, memory.id, memory.type) as (MemoryEntry & { distance: number; tags: string })[];
+
+      const duplicates = similar
+        .filter(s => s.distance < similarityThreshold)
+        .map(s => this.decryptRow(s));
+
+      if (duplicates.length > 0) {
+        const cluster = [memory, ...duplicates];
+        clusters.push(cluster);
+        cluster.forEach(m => processed.add(m.id));
+      }
+    }
+
+    return clusters;
   }
 
   export(): MemoryEntry[] {

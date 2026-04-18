@@ -3,3 +3,5 @@ build/
 data/
 .env
 *.db
+.DS_Store
+~/

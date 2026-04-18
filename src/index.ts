@@ -333,13 +333,14 @@ server.registerTool(
   'memory_dream',
   {
     title: 'Dream — Organize Memory Store',
-    description: 'Run the full memory organization cycle (orient, gather signal, consolidate, prune). Returns health analysis and actionable recommendations. Execute the suggested tool calls to carry out the organization.',
+    description: 'Run the full memory organization cycle (orient, gather signal, consolidate, prune). Automatically detects duplicate memories and suggests merges. Execute the suggested tool calls to carry out the organization.',
     inputSchema: z.object({
       project: z.string().optional().describe('Only organize memories for this project'),
       dry_run: z.boolean().optional().describe('If true, only report what would be done without making changes'),
+      auto_merge: z.boolean().optional().describe('If true, automatically merge detected duplicates (requires all memories in cluster to have confidence >= 0.8)'),
     }),
   },
-  async ({ project, dry_run }) => {
+  async ({ project, dry_run, auto_merge }) => {
     const stats = store.getHealthStats();
     const memories = store.list(undefined, project);
 
@@ -360,7 +361,33 @@ server.registerTool(
     report += `- Stale episodes (>30d, no expiry): ${stats.staleEpisodesCount}\n\n`;
 
     report += `## Phase 2: Gather Signal\n\n`;
-    report += `Review the following memories for duplicates, contradictions, and staleness:\n\n`;
+
+    // Auto-detect duplicate clusters
+    const duplicateClusters = await store.findDuplicateClusters(project, 18.0);
+
+    if (duplicateClusters.length > 0) {
+      report += `### Detected ${duplicateClusters.length} duplicate cluster(s):\n\n`;
+      for (let i = 0; i < duplicateClusters.length; i++) {
+        const cluster = duplicateClusters[i];
+        report += `**Cluster ${i + 1}** (${cluster.length} memories):\n`;
+        for (const m of cluster) {
+          report += `- [${m.id}] ${m.content} — confidence: ${m.confidence}\n`;
+        }
+
+        const allHighConfidence = cluster.every(m => m.confidence >= 0.8);
+        if (allHighConfidence) {
+          report += `  ✓ All memories have confidence >= 0.8, safe to merge\n`;
+        } else {
+          const lowConf = cluster.filter(m => m.confidence < 0.8);
+          report += `  ⚠ ${lowConf.length} memory(ies) have confidence < 0.8, manual review recommended\n`;
+        }
+        report += '\n';
+      }
+    } else {
+      report += `No duplicate clusters detected.\n\n`;
+    }
+
+    report += `Review the following memories for contradictions and staleness:\n\n`;
     for (const [type, items] of Object.entries(grouped)) {
       report += `### ${type} (${items.length})\n`;
       for (const m of items) {
@@ -372,7 +399,42 @@ server.registerTool(
     }
 
     report += `## Phase 3: Consolidate\n\n`;
-    report += `For each group of near-duplicate or closely related memories, call \`memory_consolidate\` with the IDs and a merged summary.\n\n`;
+
+    if (auto_merge && duplicateClusters.length > 0 && !dry_run) {
+      report += `### Auto-merge results:\n\n`;
+      let mergedCount = 0;
+      let skippedCount = 0;
+
+      for (const cluster of duplicateClusters) {
+        const allHighConfidence = cluster.every(m => m.confidence >= 0.8);
+
+        if (allHighConfidence) {
+          try {
+            // Merge the contents
+            const mergedContent = cluster.map(m => m.content).join('; ');
+            const ids = cluster.map(m => m.id);
+            await store.consolidate(ids, mergedContent);
+            report += `✓ Merged cluster: ${ids.join(', ')}\n`;
+            report += `  Into: "${mergedContent}"\n\n`;
+            mergedCount++;
+          } catch (err: unknown) {
+            const error = err as Error;
+            report += `✗ Failed to merge cluster: ${error.message}\n\n`;
+            skippedCount++;
+          }
+        } else {
+          report += `⊘ Skipped cluster (low confidence): ${cluster.map(m => m.id).join(', ')}\n\n`;
+          skippedCount++;
+        }
+      }
+
+      report += `Summary: ${mergedCount} cluster(s) merged, ${skippedCount} skipped\n\n`;
+    } else if (duplicateClusters.length > 0) {
+      report += `For each duplicate cluster above, call \`memory_consolidate\` with the IDs and a merged summary.\n\n`;
+      report += `Or re-run with \`auto_merge: true\` to automatically merge high-confidence clusters.\n\n`;
+    } else {
+      report += `No duplicates detected. Manual consolidation not needed.\n\n`;
+    }
 
     report += `## Phase 4: Prune\n\n`;
     report += `Actions to take:\n`;
