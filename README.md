@@ -1,143 +1,213 @@
 # MemoryVault
 
-> MCP Memory Server — Your AI memory belongs to you, not the platform.
+> MCP Memory Server — your AI memory belongs to you, not the platform.
 
-MemoryVault is a local-first, end-to-end encrypted MCP (Model Context Protocol) server that gives your AI assistants persistent, searchable, and cross-platform memory.
+MemoryVault is a local-first MCP (Model Context Protocol) memory server that gives AI tools persistent, searchable memory. It stores memories in SQLite, uses `sqlite-vec` + Ollama for semantic retrieval, supports optional AES-256-GCM encryption, and can sync encrypted data through Supabase.
 
-Instead of retraining every new AI tool on who you are, what you prefer, and how your project works, MemoryVault acts as your universal AI context layer. It automatically extracts, encrypts, and syncs your working memory across devices.
+## What It Does
 
-## Key Features
+- Local semantic memory with `SQLite + sqlite-vec + Ollama (nomic-embed-text)`
+- MCP server with proactive memory instructions for connected clients
+- Optional end-to-end encryption via `MEMORYVAULT_PASSPHRASE`
+- Optional cloud sync via Supabase Magic Link auth
+- Claude Code `SessionEnd` hook for automatic extraction after a chat ends
+- Built-in dashboard on `http://localhost:3080`
+- CLI commands for add/search/list/export/review/cleanup/sync
 
-- **Local-First Semantic Search**: Powered by SQLite + sqlite-vec and Ollama (nomic-embed-text) for fast, local 768-dimensional vector search.
-- **E2EE (End-to-End Encryption)**: Memories are encrypted locally using AES-256-GCM. Your passphrase never leaves your machine; the cloud only sees ciphertext.
-- **Cloud Sync**: Seamless cross-device synchronization backed by Supabase PostgreSQL and Magic Link authentication. Last-write-wins conflict resolution.
-- **AutoDream (REM-style Consolidation)**: Automatically cleans up, merges, and prunes stale memories using a 4-phase "REM sleep" cycle to keep the context window lean.
-- **Web Dashboard**: A lightweight, built-in dashboard for managing your memories, viewing version history, and monitoring memory health.
-- **Auto-Extraction**: Integrates with Claude Code's SessionEnd hook to automatically extract valuable context when you finish a conversation.
-
----
-
-## Installation & Setup
-
-### Quick Start (Interactive)
+## Quick Start
 
 ```bash
-git clone https://github.com/memoryvault/memory-vault.git
-cd memory-vault
+git clone https://github.com/fusae/Memory-Vault.git
+cd Memory-Vault
 bash scripts/setup.sh
 ```
 
-The interactive script will guide you through all steps: prerequisites check, build, CLI registration, MCP integration, encryption, and cloud sync.
+The setup script will:
 
-### Manual Setup
+- check Node.js and Ollama
+- install dependencies and build
+- register CLI commands globally
+- offer to connect Claude Code and Codex CLI
+- optionally enable encryption
+- optionally configure Supabase sync
+
+## Manual Setup
 
 ### 1. Prerequisites
 
-- **Node.js** >= 18
-- **Ollama** running locally with the embedding model:
-  ```bash
-  ollama pull nomic-embed-text
-  ```
+- Node.js `>= 18`
+- `pnpm`
+- Ollama running locally
 
-### 2. Install
+Pull the embedding model:
 
 ```bash
-git clone https://github.com/memoryvault/memory-vault.git
-cd memory-vault
-pnpm install
-pnpm build
-
-# Register CLI commands globally
-npm link
+ollama pull nomic-embed-text
 ```
 
-After `npm link`, you can use `memory-vault-cli` directly from anywhere.
+### 2. Install and Build
 
-### 3. Basic Configuration (Local Only)
+```bash
+git clone https://github.com/fusae/Memory-Vault.git
+cd Memory-Vault
+pnpm install
+pnpm build
+pnpm link --global
+```
+
+After `pnpm link --global`, these commands are available globally:
+
+- `memory-vault` — MCP server entry
+- `memory-vault-cli` — CLI
+- `memory-vault-dashboard` — dashboard
+
+If `pnpm link --global` fails with `ERR_PNPM_NO_GLOBAL_BIN_DIR`, set `PNPM_HOME` first:
+
+```bash
+export PNPM_HOME="$HOME/.local/share/pnpm"
+mkdir -p "$PNPM_HOME"
+export PATH="$PNPM_HOME:$PATH"
+pnpm link --global
+```
+
+To make it persistent:
+
+```bash
+echo 'export PNPM_HOME="$HOME/.local/share/pnpm"' >> ~/.bashrc
+echo 'export PATH="$PNPM_HOME:$PATH"' >> ~/.bashrc
+```
+
+### 3. Environment
 
 ```bash
 cp .env.example .env
 ```
 
-### 4. Enable End-to-End Encryption (Optional)
+Important variables:
+
+- `MEMORY_DB_PATH` — defaults to `~/.memoryvault/memory.db`
+- `OLLAMA_BASE_URL` — defaults to `http://localhost:11434`
+- `MEMORYVAULT_PASSPHRASE` — optional, enables E2EE
+- `SUPABASE_URL` / `SUPABASE_ANON_KEY` — optional, for sync
+- `DASHBOARD_PORT` — optional, defaults to `3080`
+
+## Encryption
+
+Initialize encryption:
 
 ```bash
 memory-vault-cli init-encryption
 ```
 
-The command will auto-generate a strong passphrase by default (or enter `n` to set your own). After initialization, add the passphrase to your shell profile as instructed by the output.
+This generates or asks for a passphrase, then encrypts existing memories. Set the passphrase in your shell environment before running the MCP server or dashboard.
 
-### 5. Enable Cloud Sync via Supabase (Optional)
+## Cloud Sync
 
-**5.1 Create a Supabase project**
+### 1. Create a Supabase project
 
-1. Go to [supabase.com](https://supabase.com) and sign up (free tier is sufficient)
-2. Click "New Project", pick a name and region, set a database password
-3. Wait for the project to finish provisioning
+Create a project at [supabase.com](https://supabase.com), then copy:
 
-**5.2 Get your credentials**
+- Project URL
+- anon public key
 
-In your Supabase project dashboard, go to **Settings > API** and copy:
-- **Project URL** (e.g. `https://abcdefg.supabase.co`)
-- **anon public key** (starts with `eyJ...`)
+### 2. Run the schema
 
-**5.3 Set up the database**
+Open Supabase SQL Editor and run:
 
-In your Supabase dashboard, go to **SQL Editor**, paste the contents of `scripts/setup-supabase.sql`, and click **Run**.
+`scripts/setup-supabase.sql`
 
-**5.4 Configure email verification**
+### 3. Configure Magic Link email template
 
-Go to **Authentication > Email Templates > Magic Link** and replace the email body with:
+In Supabase Dashboard:
 
-```
+`Authentication -> Email Templates -> Magic Link`
+
+Set the email body to:
+
+```text
 Your MemoryVault verification code is: {{ .Token }}
 ```
 
-This ensures the CLI receives a numeric code instead of a clickable link.
-
-**5.5 Connect MemoryVault**
+### 4. Save config and log in
 
 ```bash
-# Enter your Supabase URL and Anon Key
 memory-vault-cli setup
-
-# Login with your email
 memory-vault-cli auth login
 ```
 
-Once logged in, memories are **automatically synced** to the cloud after every write, update, or delete. No manual sync needed. If your session expires, you'll see a one-time warning — just run `memory-vault-cli auth login` again.
-
-You can also sync manually or check status:
+Useful sync commands:
 
 ```bash
-memory-vault-cli sync --status   # Check sync status
-memory-vault-cli sync            # Manual full sync (push + pull)
-memory-vault-cli sync --pull     # Pull from cloud (e.g. on a new device)
+memory-vault-cli auth status
+memory-vault-cli sync --status
+memory-vault-cli sync
+memory-vault-cli sync --push
+memory-vault-cli sync --pull
 ```
 
----
-
-## Web Dashboard
-
-```bash
-memory-vault-dashboard
-```
-
-Open `http://localhost:3080`. From here you can view your timeline, edit memories, check sync status, and monitor memory health.
-
----
+When the MCP server is running and auth is valid, writes also try to auto-push in the background.
 
 ## MCP Integration
+
+MemoryVault is a local `stdio` MCP server:
+
+```bash
+node /path/to/memory-vault/build/index.js
+```
 
 ### Claude Code
 
 ```bash
 claude mcp add memory-vault node /path/to/memory-vault/build/index.js
+claude mcp list
 ```
 
-**Auto-Extraction Hook (SessionEnd)**
+### Codex CLI
 
-To automatically extract memories and run cleanup when you exit Claude Code, add this to `~/.claude/settings.json`:
+```bash
+codex mcp add memory-vault -- node /path/to/memory-vault/build/index.js
+codex mcp list
+```
+
+### Generic MCP Client
+
+Use a `stdio` server with:
+
+- command: `node`
+- args: `/path/to/memory-vault/build/index.js`
+
+### Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "memory-vault": {
+      "command": "node",
+      "args": ["/path/to/memory-vault/build/index.js"],
+      "env": {
+        "MEMORYVAULT_PASSPHRASE": "your-passphrase-if-needed"
+      }
+    }
+  }
+}
+```
+
+## Claude SessionEnd Hook
+
+MemoryVault ships with:
+
+`scripts/session-end-hook.sh`
+
+This hook:
+
+- skips very short sessions
+- runs `memory-vault-cli organize --auto`
+- generates an extraction prompt from the transcript
+- calls `claude -p` in the background to write memories through MCP
+
+Example Claude Code hook config:
 
 ```json
 {
@@ -156,52 +226,78 @@ To automatically extract memories and run cleanup when you exit Claude Code, add
 }
 ```
 
-### Claude Desktop
+If your local Claude setup does not use `~/.claude/mcp.json`, update the `--mcp-config` path inside `scripts/session-end-hook.sh`.
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+## Dashboard
 
-```json
-{
-  "mcpServers": {
-    "memory-vault": {
-      "command": "node",
-      "args": ["/path/to/memory-vault/build/index.js"],
-      "env": {
-        "MEMORYVAULT_PASSPHRASE": "your-passphrase-if-using-e2ee"
-      }
-    }
-  }
-}
-```
-
----
-
-## CLI Usage
+Start it with:
 
 ```bash
-# Core Memory Management
-memory-vault-cli add "I prefer TypeScript" -t preference --tags "language,typescript"
+memory-vault-dashboard
+```
+
+Open:
+
+[http://localhost:3080](http://localhost:3080)
+
+## CLI
+
+### Core
+
+```bash
+memory-vault-cli add "I prefer TypeScript" -t preference --tags "typescript,style"
 memory-vault-cli search "TypeScript"
 memory-vault-cli list
 memory-vault-cli get <id>
 memory-vault-cli delete <id>
-
-# AutoDream & Extraction
-memory-vault-cli organize --auto
-memory-vault-cli extract -f <transcript.jsonl>
-
-# Auth & Sync
-memory-vault-cli auth login
-memory-vault-cli auth status
-memory-vault-cli sync
-memory-vault-cli sync --status
-
-# Export
 memory-vault-cli export
 memory-vault-cli export -f markdown
 ```
 
----
+### Organization
+
+```bash
+memory-vault-cli organize
+memory-vault-cli organize --auto
+memory-vault-cli synthesize --hours 24
+memory-vault-cli synthesize --hours 24 --dry-run
+```
+
+`organize` focuses on health stats and safe cleanup. `synthesize` scans recent memories for untagged entries, duplicates, contradictions, and low-value items.
+
+### Extraction
+
+```bash
+memory-vault-cli extract -f path/to/transcript.jsonl
+cat notes.txt | memory-vault-cli extract
+```
+
+This command prints an extraction prompt for an MCP-capable model to execute.
+
+### Auth and Sync
+
+```bash
+memory-vault-cli setup
+memory-vault-cli auth login
+memory-vault-cli auth status
+memory-vault-cli auth logout
+memory-vault-cli sync
+memory-vault-cli sync --status
+```
+
+## Scheduled Synthesis
+
+The repo includes:
+
+`scripts/synthesize-cron.sh`
+
+It runs:
+
+```bash
+memory-vault-cli synthesize --hours 24
+```
+
+Use it from `cron` or `launchd` for periodic cleanup/review.
 
 ## MCP Capabilities
 
@@ -209,34 +305,44 @@ memory-vault-cli export -f markdown
 
 | Tool | Description |
 |------|-------------|
-| `memory_write` | Write a new memory with semantic conflict detection |
+| `memory_write` | Write a memory with semantic conflict detection |
 | `memory_search` | Semantic search across memories |
-| `memory_list` | List active memories with filters |
-| `memory_update` | Update existing memory with version history |
+| `memory_list` | List active memories |
 | `memory_delete` | Permanently delete a memory |
-| `memory_forget` | Soft-delete (archive) with a tracked reason |
-| `memory_consolidate` | Merge multiple memories into one |
-| `memory_versions` | View version history for a memory |
+| `memory_update` | Update a memory with version history |
 | `memory_export` | Export all memories as JSON |
 | `memory_export_markdown` | Export all memories as Markdown |
-| `memory_dream` | Run the 4-phase AutoDream consolidation cycle |
+| `memory_forget` | Soft-delete a memory with reason |
+| `memory_consolidate` | Merge multiple memories into one |
+| `memory_versions` | Show version history |
+| `memory_dream` | Run the full dream/organization cycle |
 
 ### Resources (2)
 
 | Resource | Description |
 |----------|-------------|
-| `memoryvault://context/summary` | Global memory context overview |
-| `memoryvault://project/{name}` | All memories for a specific project |
+| `memoryvault://context/summary` | Summary of identity, preferences, projects, and rules |
+| `memoryvault://project/{name}` | Project-scoped memory view |
 
 ### Prompts (3)
 
 | Prompt | Description |
 |--------|-------------|
-| `memory_extract` | Extract cross-session value from a conversation transcript |
-| `memory_review` | Review recently added memories |
-| `memory_organize` | REM-sleep style 4-phase consolidation prompt |
+| `memory_extract` | Extract long-term memories from a conversation |
+| `memory_review` | Review recent memories |
+| `memory_organize` | Four-phase memory organization prompt |
 
----
+## How Clients Use It
+
+The MCP server instructs connected models to:
+
+- call `memory_search` at session start
+- silently apply retrieved preferences and project context
+- proactively write identity/preferences/rules/project decisions
+- check for duplicates before writing
+- avoid telling the user that memory was saved
+
+Whether a client actually does this depends on the client and model honoring the MCP instructions.
 
 ## License
 
