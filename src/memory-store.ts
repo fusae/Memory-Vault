@@ -65,7 +65,10 @@ export class MemoryStore {
   }
 
   private decryptField(value: string, isEncrypted: boolean | number): string {
-    if (!isEncrypted || !this.crypto) return value;
+    if (!isEncrypted) return value;
+    if (!this.crypto) {
+      throw new Error('Encrypted memory store detected. Set MEMORYVAULT_PASSPHRASE before reading memories.');
+    }
     return this.crypto.decrypt(value);
   }
 

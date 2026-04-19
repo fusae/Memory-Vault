@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import { CryptoService } from './crypto.js';
 import { MemoryStore } from './memory-store.js';
 import { AuthService } from './auth.js';
 import { getSupabaseClient, createSupabaseClient } from './supabase.js';
@@ -11,7 +12,11 @@ const DB_PATH = getMemoryDbPath();
 
 let _store: MemoryStore | null = null;
 function getStore(): MemoryStore {
-  if (!_store) _store = new MemoryStore(DB_PATH);
+  if (!_store) {
+    const passphrase = process.env.MEMORYVAULT_PASSPHRASE?.trim();
+    const crypto = passphrase ? new CryptoService(passphrase) : undefined;
+    _store = new MemoryStore(DB_PATH, crypto);
+  }
   return _store;
 }
 
@@ -495,7 +500,6 @@ export async function syncCommand(opts: { push?: boolean; pull?: boolean; status
 
 // ─── Init Encryption ───
 export async function initEncryption() {
-  const { CryptoService } = await import('./crypto.js');
   const { randomBytes } = await import('node:crypto');
 
   const choice = await askInput('Generate a strong passphrase automatically? (Y/n): ');
