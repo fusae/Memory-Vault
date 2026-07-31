@@ -23,6 +23,7 @@ import {
   promoteMemory,
   joinSpace,
   listSpaces,
+  serveSpaceCommand,
 } from './cli-commands.js';
 import { deriveProjectKey } from './project-key.js';
 
@@ -41,7 +42,8 @@ program
   .option('--project <project>', 'Associated project name')
   .option('--confidence <confidence>', 'Confidence 0-1')
   .option('--scope <scope>', 'Memory scope: personal | team')
-  .option('--space-id <spaceId>', 'Team space id')
+  .option('--space <space>', 'Team space id')
+  .option('--space-id <spaceId>', 'Team space id (alias for --space)')
   .action(addMemory);
 
 program
@@ -136,10 +138,20 @@ const space = program.command('space').description('Manage local team spaces');
 space.command('join <space_id>')
   .description('Join a local team space')
   .requiredOption('--name <name>', 'Space name')
+  .option('--url <url>', 'Remote space server URL')
+  .option('--token <token>', 'Remote space server token')
   .action(joinSpace);
 space.command('list')
   .description('List joined team spaces')
   .action(listSpaces);
+
+program
+  .command('serve-space')
+  .description('Run this vault as a team space server')
+  .requiredOption('--port <port>', 'Port to listen on')
+  .requiredOption('--token <token>', 'Bearer token')
+  .option('--space <space_id>', 'Only serve one team space id')
+  .action(serveSpaceCommand);
 
 program
   .command('project-key <cwd>', { hidden: true })

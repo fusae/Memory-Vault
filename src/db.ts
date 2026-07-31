@@ -98,9 +98,23 @@ export function createDatabase(dbPath: string): Database.Database {
     CREATE TABLE IF NOT EXISTS spaces (
       space_id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      joined_at TEXT NOT NULL
+      joined_at TEXT NOT NULL,
+      remote_url TEXT,
+      remote_token TEXT,
+      last_pulled_at TEXT
     )
   `);
+
+  const spaceColumns = db.pragma('table_info(spaces)') as { name: string }[];
+  if (!spaceColumns.some(c => c.name === 'remote_url')) {
+    db.exec('ALTER TABLE spaces ADD COLUMN remote_url TEXT');
+  }
+  if (!spaceColumns.some(c => c.name === 'remote_token')) {
+    db.exec('ALTER TABLE spaces ADD COLUMN remote_token TEXT');
+  }
+  if (!spaceColumns.some(c => c.name === 'last_pulled_at')) {
+    db.exec('ALTER TABLE spaces ADD COLUMN last_pulled_at TEXT');
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS events (

@@ -16,6 +16,7 @@ import type {
   SpaceEntry,
 } from './types.js';
 import { scheduleAgentsMdRefresh } from './agents-md.js';
+import { scheduleTeamMemoryPush } from './space-sync.js';
 
 const CONFLICT_DISTANCE_THRESHOLD = 0.3;
 
@@ -101,6 +102,7 @@ export class MemoryStore {
       detail: memory.content.slice(0, 160),
     });
     scheduleAgentsMdRefresh(this, memory.project, sourceCwd);
+    scheduleTeamMemoryPush(memory);
     return memory;
   }
 
@@ -562,16 +564,21 @@ export class MemoryStore {
     return rows.map(row => this.decryptRow(row));
   }
 
-  joinSpace(spaceId: string, name?: string): SpaceEntry {
+  joinSpace(spaceId: string, name?: string, remoteUrl?: string, remoteToken?: string): SpaceEntry {
     const db = getDatabase();
     const now = new Date().toISOString();
     const trimmedSpaceId = spaceId.trim();
     const trimmedName = name?.trim() || trimmedSpaceId;
+    const trimmedUrl = remoteUrl?.trim() || null;
+    const trimmedToken = remoteToken?.trim() || null;
     db.prepare(`
-      INSERT INTO spaces (space_id, name, joined_at)
-      VALUES (?, ?, ?)
-      ON CONFLICT(space_id) DO UPDATE SET name = excluded.name
-    `).run(trimmedSpaceId, trimmedName, now);
+      INSERT INTO spaces (space_id, name, joined_at, remote_url, remote_token)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(space_id) DO UPDATE SET
+        name = excluded.name,
+        remote_url = COALESCE(excluded.remote_url, spaces.remote_url),
+        remote_token = COALESCE(excluded.remote_token, spaces.remote_token)
+    `).run(trimmedSpaceId, trimmedName, now, trimmedUrl, trimmedToken);
     return db.prepare('SELECT * FROM spaces WHERE space_id = ?').get(trimmedSpaceId) as SpaceEntry;
   }
 
@@ -593,7 +600,9 @@ export class MemoryStore {
           updated_at = ?
       WHERE id = ?
     `).run(spaceId, now, id);
-    return this.get(id)!;
+    const memory = this.get(id)!;
+    scheduleTeamMemoryPush(memory);
+    return memory;
   }
 
   getHealthStats(): {
