@@ -65,6 +65,14 @@ export function createDatabase(dbPath: string): Database.Database {
   if (!columns.some(c => c.name === 'last_synced_at')) {
     db.exec('ALTER TABLE memories ADD COLUMN last_synced_at TEXT');
   }
+  if (!columns.some(c => c.name === 'scope')) {
+    db.exec("ALTER TABLE memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'personal'");
+  }
+  if (!columns.some(c => c.name === 'space_id')) {
+    db.exec('ALTER TABLE memories ADD COLUMN space_id TEXT');
+  }
+
+  db.exec("UPDATE memories SET scope = 'personal', space_id = NULL WHERE scope NOT IN ('personal','team') OR scope IS NULL OR (scope = 'personal' AND space_id IS NOT NULL)");
 
   // Create memory_versions table for version history
   db.exec(`
@@ -83,6 +91,14 @@ export function createDatabase(dbPath: string): Database.Database {
       agents_md_path TEXT NOT NULL,
       registered_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS spaces (
+      space_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      joined_at TEXT NOT NULL
     )
   `);
 

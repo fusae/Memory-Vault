@@ -240,6 +240,39 @@ describe('CLI commands', () => {
     logSpy.mockRestore();
   });
 
+  it('should promote a memory to team scope and mark synced rows modified', async () => {
+    const { addMemory, promoteMemory } = await import('../src/cli-commands.js');
+    const { getDatabase } = await import('../src/db.js');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await addMemory('personal memory to promote', { type: 'project' });
+    const id = lastCreatedId(logSpy);
+    getDatabase().prepare("UPDATE memories SET sync_status = 'synced' WHERE id = ?").run(id);
+
+    promoteMemory(id, { space: 'team-space' });
+
+    const row = getDatabase().prepare('SELECT scope, space_id, sync_status FROM memories WHERE id = ?').get(id) as { scope: string; space_id: string; sync_status: string };
+    expect(row.scope).toBe('team');
+    expect(row.space_id).toBe('team-space');
+    expect(row.sync_status).toBe('modified');
+
+    logSpy.mockRestore();
+  });
+
+  it('should join and list spaces', async () => {
+    const { joinSpace, listSpaces } = await import('../src/cli-commands.js');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    joinSpace('space-a', { name: 'Alpha Team' });
+    expect(logSpy).toHaveBeenCalledWith('✓ Space joined: space-a');
+
+    logSpy.mockClear();
+    listSpaces();
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('[space-a] Alpha Team'));
+
+    logSpy.mockRestore();
+  });
+
   it('should expand tilde in MEMORY_DB_PATH', async () => {
     const { getMemoryDbPath } = await import('../src/path-utils.js');
 
@@ -262,6 +295,48 @@ describe('CLI commands', () => {
     expect(output).toContain('memory for current project');
     expect(output).not.toContain('memory for another project');
     expect(writeSpy).toHaveBeenCalledWith(output);
+
+    logSpy.mockRestore();
+    writeSpy.mockRestore();
+  });
+
+  it('should merge team, project, and global personal memories in recall context', async () => {
+    const { addMemory, joinSpace, recallMemories } = await import('../src/cli-commands.js');
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const project = path.resolve(TEST_CWD);
+
+    joinSpace('space-a', { name: 'Alpha Team' });
+    await addMemory('team shared recall memory', { type: 'rule', scope: 'team', spaceId: 'space-a' });
+    await addMemory('project scoped recall memory', { type: 'project', project });
+    await addMemory('global personal recall memory', { type: 'preference' });
+    await addMemory('unjoined team recall memory', { type: 'episode', scope: 'team', spaceId: 'space-b' });
+
+    const output = await recallMemories({ cwd: TEST_CWD, format: 'context', budget: '120' });
+
+    expect(output).toContain('[团队记忆|来源:');
+    expect(output).toContain('team shared recall memory');
+    expect(output).toContain('project scoped recall memory');
+    expect(output).toContain('global personal recall memory');
+    expect(output).not.toContain('unjoined team recall memory');
+
+    logSpy.mockRestore();
+    writeSpy.mockRestore();
+  });
+
+  it('should roll unused recall budget into non-empty layers', async () => {
+    const { addMemory, recallMemories } = await import('../src/cli-commands.js');
+    const writeSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const project = path.resolve(TEST_CWD);
+
+    await addMemory('project rollover memory one', { type: 'project', project });
+    await addMemory('project rollover memory two', { type: 'rule', project });
+
+    const output = await recallMemories({ cwd: TEST_CWD, format: 'context', budget: '40' });
+
+    expect(output).toContain('project rollover memory one');
+    expect(output).toContain('project rollover memory two');
 
     logSpy.mockRestore();
     writeSpy.mockRestore();
@@ -362,6 +437,22 @@ describe('CLI commands', () => {
     expect(output).toContain('<!-- memory-vault:begin -->');
     expect(output).toContain('agents md create memory');
     expect(output).toContain('<!-- memory-vault:end -->');
+
+    logSpy.mockRestore();
+  });
+
+  it('should include team memory prefix in AGENTS.md managed block', async () => {
+    const { addMemory, joinSpace, syncAgentsMdCommand } = await import('../src/cli-commands.js');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const agentsPath = path.join(TEST_CWD, 'AGENTS.md');
+
+    joinSpace('agents-space', { name: 'Agents Team' });
+    await addMemory('agents md team memory', { type: 'rule', scope: 'team', spaceId: 'agents-space' });
+    await syncAgentsMdCommand({ cwd: TEST_CWD });
+
+    const output = fs.readFileSync(agentsPath, 'utf-8');
+    expect(output).toContain('[团队记忆|来源:');
+    expect(output).toContain('agents md team memory');
 
     logSpy.mockRestore();
   });

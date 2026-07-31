@@ -41,6 +41,27 @@ describe('MemoryStore', () => {
       expect(result.memory.tags).toEqual(['language', 'typescript']);
       expect(result.conflict_action).toBe('created');
     });
+
+    it('should default invalid team scope without space_id to personal', async () => {
+      const result = await store.write({
+        content: 'Team memory without space',
+        type: 'project',
+        scope: 'team',
+      });
+      expect(result.memory.scope).toBe('personal');
+      expect(result.memory.space_id).toBeNull();
+    });
+
+    it('should store team scope when space_id is provided', async () => {
+      const result = await store.write({
+        content: 'Shared team convention',
+        type: 'rule',
+        scope: 'team',
+        space_id: 'space-a',
+      });
+      expect(result.memory.scope).toBe('team');
+      expect(result.memory.space_id).toBe('space-a');
+    });
   });
 
   describe('search', () => {

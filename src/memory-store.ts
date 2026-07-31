@@ -12,10 +12,17 @@ import type {
   UpdateMemoryInput,
   MemoryVersion,
   WriteMemoryResult,
+  MemoryScope,
+  SpaceEntry,
 } from './types.js';
 import { scheduleAgentsMdRefresh } from './agents-md.js';
 
 const CONFLICT_DISTANCE_THRESHOLD = 0.3;
+
+function normalizeScope(scope: string | undefined, spaceId: string | undefined): { scope: MemoryScope; space_id: string | null } {
+  if (scope === 'team' && spaceId?.trim()) return { scope: 'team', space_id: spaceId.trim() };
+  return { scope: 'personal', space_id: null };
+}
 
 export class MemoryStore {
   private crypto?: CryptoService;
@@ -102,6 +109,7 @@ export class MemoryStore {
     const id = randomUUID();
     const now = new Date().toISOString();
     const tagsJson = JSON.stringify(input.tags ?? []);
+    const normalizedScope = normalizeScope(input.scope, input.space_id);
 
     // Embedding uses plaintext (before encryption) to enable semantic search
     const embedding = await getEmbedding(input.content);
@@ -184,12 +192,12 @@ export class MemoryStore {
 
         // Case 3: Conflicting memory is active, new confidence < existing — create pending_review
         db.prepare(`
-          INSERT INTO memories (id, type, content, tags, project, confidence, confirmation_count, source_tool, source_excerpt, source_conversation_id, is_encrypted, status, expires_at, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'pending_review', ?, ?, ?)
+          INSERT INTO memories (id, type, content, tags, project, confidence, confirmation_count, source_tool, source_excerpt, source_conversation_id, is_encrypted, status, expires_at, scope, space_id, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?, ?)
         `).run(id, input.type, storedContent, storedTags, input.project ?? null,
                newConfidence, input.source_tool ?? null,
                storedExcerpt, input.source_conversation_id ?? null,
-               isEncrypted ? 1 : 0, input.expires_at ?? null, now, now);
+               isEncrypted ? 1 : 0, input.expires_at ?? null, normalizedScope.scope, normalizedScope.space_id, now, now);
 
         const row = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number | bigint };
         db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(row.rowid), vecBuffer);
@@ -204,12 +212,12 @@ export class MemoryStore {
 
     // No conflict: normal insert
     db.prepare(`
-      INSERT INTO memories (id, type, content, tags, project, confidence, confirmation_count, source_tool, source_excerpt, source_conversation_id, is_encrypted, status, expires_at, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'active', ?, ?, ?)
+      INSERT INTO memories (id, type, content, tags, project, confidence, confirmation_count, source_tool, source_excerpt, source_conversation_id, is_encrypted, status, expires_at, scope, space_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
     `).run(id, input.type, storedContent, storedTags, input.project ?? null,
            input.confidence ?? 0.8, input.source_tool ?? null,
            storedExcerpt, input.source_conversation_id ?? null,
-           isEncrypted ? 1 : 0, input.expires_at ?? null, now, now);
+           isEncrypted ? 1 : 0, input.expires_at ?? null, normalizedScope.scope, normalizedScope.space_id, now, now);
 
     const row = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number | bigint };
     db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(row.rowid), vecBuffer);
@@ -513,6 +521,79 @@ export class MemoryStore {
 
     const rows = db.prepare(sql).all(...params) as (MemoryEntry & { tags: string })[];
     return rows.map(row => this.decryptRow(row));
+  }
+
+  listProjectMemories(project: string): MemoryEntry[] {
+    const db = getDatabase();
+    const rows = db.prepare(`
+      SELECT * FROM memories
+      WHERE status = 'active'
+        AND (expires_at IS NULL OR expires_at > ?)
+        AND project = ?
+        AND scope = 'personal'
+      ORDER BY updated_at DESC
+    `).all(new Date().toISOString(), project) as (MemoryEntry & { tags: string })[];
+    return rows.map(row => this.decryptRow(row));
+  }
+
+  listGlobalPersonalMemories(): MemoryEntry[] {
+    const db = getDatabase();
+    const rows = db.prepare(`
+      SELECT * FROM memories
+      WHERE status = 'active'
+        AND (expires_at IS NULL OR expires_at > ?)
+        AND project IS NULL
+        AND scope = 'personal'
+      ORDER BY updated_at DESC
+    `).all(new Date().toISOString()) as (MemoryEntry & { tags: string })[];
+    return rows.map(row => this.decryptRow(row));
+  }
+
+  listJoinedTeamMemories(): MemoryEntry[] {
+    const db = getDatabase();
+    const rows = db.prepare(`
+      SELECT m.* FROM memories m
+      INNER JOIN spaces s ON s.space_id = m.space_id
+      WHERE m.status = 'active'
+        AND (m.expires_at IS NULL OR m.expires_at > ?)
+        AND m.scope = 'team'
+      ORDER BY m.updated_at DESC
+    `).all(new Date().toISOString()) as (MemoryEntry & { tags: string })[];
+    return rows.map(row => this.decryptRow(row));
+  }
+
+  joinSpace(spaceId: string, name?: string): SpaceEntry {
+    const db = getDatabase();
+    const now = new Date().toISOString();
+    const trimmedSpaceId = spaceId.trim();
+    const trimmedName = name?.trim() || trimmedSpaceId;
+    db.prepare(`
+      INSERT INTO spaces (space_id, name, joined_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(space_id) DO UPDATE SET name = excluded.name
+    `).run(trimmedSpaceId, trimmedName, now);
+    return db.prepare('SELECT * FROM spaces WHERE space_id = ?').get(trimmedSpaceId) as SpaceEntry;
+  }
+
+  listSpaces(): SpaceEntry[] {
+    const db = getDatabase();
+    return db.prepare('SELECT * FROM spaces ORDER BY joined_at DESC').all() as SpaceEntry[];
+  }
+
+  promoteToTeam(id: string, spaceId: string): MemoryEntry {
+    const existing = this.get(id);
+    if (!existing) throw new Error(`Memory not found: ${id}`);
+
+    const now = new Date().toISOString();
+    getDatabase().prepare(`
+      UPDATE memories
+      SET scope = 'team',
+          space_id = ?,
+          sync_status = CASE WHEN sync_status = 'synced' THEN 'modified' ELSE sync_status END,
+          updated_at = ?
+      WHERE id = ?
+    `).run(spaceId, now, id);
+    return this.get(id)!;
   }
 
   getHealthStats(): {

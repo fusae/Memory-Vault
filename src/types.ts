@@ -2,6 +2,7 @@ export type MemoryType = 'identity' | 'preference' | 'project' | 'episode' | 'ru
 export type MemoryStatus = 'active' | 'archived' | 'pending_review';
 export type SyncStatus = 'local_only' | 'synced' | 'modified' | 'deleted';
 export type MemoryEventType = 'write' | 'recall' | 'sync';
+export type MemoryScope = 'personal' | 'team';
 
 export interface MemoryEntry {
   id: string;
@@ -18,6 +19,8 @@ export interface MemoryEntry {
   is_encrypted: boolean;
   user_id?: string;
   sync_status: SyncStatus;
+  scope: MemoryScope;
+  space_id?: string;
   remote_id?: string;
   last_synced_at?: string;
   expires_at?: string;
@@ -54,6 +57,8 @@ export interface CreateMemoryInput {
   source_conversation_id?: string;
   source_cwd?: string;
   expires_at?: string;
+  scope?: MemoryScope | string;
+  space_id?: string;
 }
 
 export interface SearchMemoryInput {
@@ -74,6 +79,12 @@ export interface UpdateMemoryInput {
   reason?: string;
   expires_at?: string;
   source_conversation_id?: string;
+}
+
+export interface SpaceEntry {
+  space_id: string;
+  name: string;
+  joined_at: string;
 }
 
 export interface MemoryEvent {
