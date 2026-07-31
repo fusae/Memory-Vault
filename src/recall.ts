@@ -1,5 +1,6 @@
 import type { MemoryStore } from './memory-store.js';
 import type { MemoryEntry, MemorySearchResult } from './types.js';
+import { recordEvent } from './db.js';
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
@@ -66,7 +67,7 @@ function fallbackRecall(store: MemoryStore, project: string, limit: number): Mem
 
 export async function buildRecallContext(
   store: MemoryStore,
-  opts: { project: string; format?: string; limit?: string; budget?: string; query?: string }
+  opts: { project: string; format?: string; limit?: string; budget?: string; query?: string; sourceTool?: string }
 ): Promise<string> {
   const startedAt = Date.now();
   const limit = parsePositiveInt(opts.limit, 10);
@@ -87,7 +88,14 @@ export async function buildRecallContext(
     memories = fallbackRecall(store, opts.project, limit);
   }
 
-  return opts.format === undefined || opts.format === 'context'
+  const output = opts.format === undefined || opts.format === 'context'
     ? formatRecallContext(memories, budget)
     : '';
+  recordEvent({
+    event_type: 'recall',
+    project_key: opts.project,
+    source_tool: opts.sourceTool ?? 'memory-vault',
+    detail: query ? `query: ${query}` : `memories: ${memories.length}`,
+  });
+  return output;
 }

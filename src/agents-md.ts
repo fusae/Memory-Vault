@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { getDatabase } from './db.js';
+import { getDatabase, recordEvent } from './db.js';
 import { deriveProjectKey } from './project-key.js';
 import { buildRecallContext } from './recall.js';
 import type { MemoryStore } from './memory-store.js';
@@ -62,7 +62,7 @@ export async function refreshAgentsMd(
   registration: ProjectRegistration,
   opts: { redact?: boolean } = {}
 ): Promise<void> {
-  const output = await buildRecallContext(store, { project: registration.project_key, format: 'context' });
+  const output = await buildRecallContext(store, { project: registration.project_key, format: 'context', sourceTool: 'sync-agents-md' });
   const context = opts.redact ? redactContext(output) : output;
   const block = `${BEGIN_MARKER}\n${context}\n${END_MARKER}`;
   const filePath = path.resolve(registration.agents_md_path);
@@ -73,6 +73,12 @@ export async function refreshAgentsMd(
 
   const now = new Date().toISOString();
   getDatabase().prepare('UPDATE projects SET updated_at = ? WHERE project_key = ?').run(now, registration.project_key);
+  recordEvent({
+    event_type: 'sync',
+    project_key: registration.project_key,
+    source_tool: 'sync-agents-md',
+    detail: path.basename(filePath),
+  });
 }
 
 export async function syncAgentsMd(

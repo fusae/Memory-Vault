@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { createDatabase, getDatabase } from './db.js';
+import { createDatabase, getDatabase, recordEvent } from './db.js';
 import { getEmbedding, OllamaUnavailableError } from './embedding.js';
 import type { CryptoService } from './crypto.js';
 import type {
@@ -87,6 +87,12 @@ export class MemoryStore {
   }
 
   private afterWrite(memory: MemoryEntry, sourceCwd?: string): MemoryEntry {
+    recordEvent({
+      event_type: 'write',
+      project_key: memory.project ?? null,
+      source_tool: memory.source_tool ?? null,
+      detail: memory.content.slice(0, 160),
+    });
     scheduleAgentsMdRefresh(this, memory.project, sourceCwd);
     return memory;
   }

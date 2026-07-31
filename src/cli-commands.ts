@@ -90,7 +90,7 @@ export async function recallMemories(opts: { cwd?: string; format?: string; limi
     const cwd = opts.cwd ?? process.cwd();
     const project = deriveProjectKey(cwd);
     const store = getStore();
-    const output = await buildRecallContext(store, { project, format: opts.format, limit: opts.limit, budget: opts.budget, query: opts.query });
+    const output = await buildRecallContext(store, { project, format: opts.format, limit: opts.limit, budget: opts.budget, query: opts.query, sourceTool: 'cli' });
     process.stdout.write(output);
     return output;
   } catch {

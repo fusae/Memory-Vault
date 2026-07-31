@@ -103,6 +103,7 @@ main { max-width: 960px; margin: 0 auto; padding: 1rem 1.5rem; }
 .count { font-size: 0.8rem; color: var(--text-muted); margin-left: auto; }
 
 .memory-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.event-list { display: flex; flex-direction: column; gap: 0.5rem; }
 
 .memory-item {
   display: flex;
@@ -118,6 +119,43 @@ main { max-width: 960px; margin: 0 auto; padding: 1rem 1.5rem; }
 .memory-item:hover { border-color: var(--primary); }
 .memory-item.archived { opacity: 0.5; }
 .memory-item.pending_review { border-left: 3px solid var(--badge-episode); }
+
+.event-item {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  transition: background 0.2s, border-color 0.2s;
+}
+.event-item.new {
+  border-color: var(--primary);
+  background: rgba(37, 99, 235, 0.08);
+}
+.event-type {
+  display: inline-block;
+  min-width: 4.5rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #fff;
+  text-align: center;
+  height: fit-content;
+}
+.event-write { background: var(--badge-project); }
+.event-recall { background: var(--badge-preference); }
+.event-sync { background: var(--badge-episode); }
+.event-content { flex: 1; min-width: 0; }
+.event-content p { font-size: 0.85rem; color: var(--text); word-break: break-word; margin-top: 0.2rem; }
+.event-meta {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
 
 .badge {
   display: inline-block;

@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { MemoryStore } from './memory-store.js';
 import type { MemoryType, MemoryStatus } from './types.js';
+import { listEvents } from './db.js';
 
 export function dashboardApi(store: MemoryStore): Hono {
   const api = new Hono();
@@ -77,6 +78,13 @@ export function dashboardApi(store: MemoryStore): Hono {
   // Health stats
   api.get('/health', (c) => {
     return c.json(store.getHealthStats());
+  });
+
+  // Recent event stream
+  api.get('/events', (c) => {
+    const rawLimit = c.req.query('limit');
+    const limit = rawLimit ? parseInt(rawLimit, 10) : 50;
+    return c.json(listEvents(limit));
   });
 
   // Export JSON

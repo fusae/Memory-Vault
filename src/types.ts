@@ -1,6 +1,7 @@
 export type MemoryType = 'identity' | 'preference' | 'project' | 'episode' | 'rule';
 export type MemoryStatus = 'active' | 'archived' | 'pending_review';
 export type SyncStatus = 'local_only' | 'synced' | 'modified' | 'deleted';
+export type MemoryEventType = 'write' | 'recall' | 'sync';
 
 export interface MemoryEntry {
   id: string;
@@ -73,4 +74,13 @@ export interface UpdateMemoryInput {
   reason?: string;
   expires_at?: string;
   source_conversation_id?: string;
+}
+
+export interface MemoryEvent {
+  id: number;
+  event_type: MemoryEventType;
+  project_key?: string | null;
+  source_tool?: string | null;
+  detail?: string | null;
+  created_at: string;
 }
