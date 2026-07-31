@@ -1,6 +1,6 @@
 export type MemoryType = 'identity' | 'preference' | 'project' | 'episode' | 'rule';
 export type MemoryStatus = 'active' | 'archived' | 'pending_review';
-export type SyncStatus = 'local_only' | 'synced' | 'modified' | 'deleted';
+export type SyncStatus = 'local_only' | 'synced' | 'modified' | 'deleted' | 'pending';
 export type MemoryEventType = 'write' | 'recall' | 'sync';
 export type MemoryScope = 'personal' | 'team';
 
@@ -85,6 +85,9 @@ export interface SpaceEntry {
   space_id: string;
   name: string;
   joined_at: string;
+  remote_url?: string | null;
+  remote_token?: string | null;
+  last_pulled_at?: string | null;
 }
 
 export interface MemoryEvent {

@@ -57,6 +57,14 @@ describe('Database migration', () => {
     expect(tables).toHaveLength(1);
   });
 
+  it('should add remote sync columns to spaces table', () => {
+    const db = createDatabase(TEST_DB);
+    const columns = db.pragma('table_info(spaces)') as { name: string }[];
+    expect(columns.some(c => c.name === 'remote_url')).toBe(true);
+    expect(columns.some(c => c.name === 'remote_token')).toBe(true);
+    expect(columns.some(c => c.name === 'last_pulled_at')).toBe(true);
+  });
+
   it('should handle being called twice without error (idempotent)', () => {
     createDatabase(TEST_DB);
     closeDatabase();

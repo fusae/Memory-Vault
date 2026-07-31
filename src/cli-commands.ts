@@ -11,6 +11,8 @@ import { getDatabase } from './db.js';
 import { deriveProjectKey } from './project-key.js';
 import { buildRecallContext } from './recall.js';
 import { registerProject, syncAgentsMd } from './agents-md.js';
+import { retryPendingTeamMemoryPushes } from './space-sync.js';
+import { startSpaceServer } from './space-server.js';
 
 const DB_PATH = getMemoryDbPath();
 
@@ -24,8 +26,9 @@ function getStore(): MemoryStore {
   return _store;
 }
 
-export async function addMemory(content: string, opts: { type: string; tags?: string; project?: string; confidence?: string; scope?: string; spaceId?: string }) {
+export async function addMemory(content: string, opts: { type: string; tags?: string; project?: string; confidence?: string; scope?: string; space?: string; spaceId?: string }) {
   const store = getStore();
+  const spaceId = opts.space ?? opts.spaceId;
   const result = await store.write({
     content,
     type: opts.type as MemoryType,
@@ -34,7 +37,7 @@ export async function addMemory(content: string, opts: { type: string; tags?: st
     confidence: opts.confidence ? parseFloat(opts.confidence) : undefined,
     source_tool: 'cli',
     scope: opts.scope,
-    space_id: opts.spaceId,
+    space_id: spaceId,
   });
   const memory = result.memory;
   console.log(`✓ Memory created: ${memory.id}`);
@@ -59,11 +62,12 @@ export function promoteMemory(id: string, opts: { space?: string }) {
   console.log(`  Space: ${memory.space_id}`);
 }
 
-export function joinSpace(spaceId: string, opts: { name?: string }) {
+export function joinSpace(spaceId: string, opts: { name?: string; url?: string; token?: string }) {
   const store = getStore();
-  const space = store.joinSpace(spaceId, opts.name);
+  const space = store.joinSpace(spaceId, opts.name, opts.url, opts.token);
   console.log(`✓ Space joined: ${space.space_id}`);
   console.log(`  Name: ${space.name}`);
+  if (space.remote_url) console.log(`  Remote: ${space.remote_url}`);
 }
 
 export function listSpaces() {
@@ -77,6 +81,7 @@ export function listSpaces() {
 
   for (const space of spaces) {
     console.log(`[${space.space_id}] ${space.name}`);
+    if (space.remote_url) console.log(`  Remote: ${space.remote_url}`);
     console.log(`  Joined: ${space.joined_at}`);
     console.log('');
   }
@@ -129,6 +134,7 @@ export async function recallMemories(opts: { cwd?: string; format?: string; limi
     const cwd = opts.cwd ?? process.cwd();
     const project = deriveProjectKey(cwd);
     const store = getStore();
+    await retryPendingTeamMemoryPushes();
     const output = await buildRecallContext(store, { project, format: opts.format, limit: opts.limit, budget: opts.budget, query: opts.query, sourceTool: 'cli' });
     process.stdout.write(output);
     return output;
@@ -141,12 +147,35 @@ export async function recallMemories(opts: { cwd?: string; format?: string; limi
 export async function syncAgentsMdCommand(opts: { cwd?: string; all?: boolean; redact?: boolean }) {
   try {
     const store = getStore();
+    await retryPendingTeamMemoryPushes();
     if (!opts.all) {
       const cwd = opts.cwd ?? process.cwd();
       registerProject(deriveProjectKey(cwd), path.join(cwd, 'AGENTS.md'));
     }
     await syncAgentsMd(store, opts);
   } catch { /* silent degradation */ }
+}
+
+export function serveSpaceCommand(opts: { port?: string; token?: string; space?: string }) {
+  const port = opts.port ? parseInt(opts.port, 10) : NaN;
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+    console.error('Missing or invalid --port <p>');
+    process.exit(1);
+  }
+  if (!opts.token?.trim()) {
+    console.error('Missing --token <t>');
+    process.exit(1);
+  }
+
+  getStore();
+  startSpaceServer({
+    port,
+    token: opts.token.trim(),
+    space: opts.space?.trim() || undefined,
+    onReady: () => {
+      console.log(`MemoryVault space server running at http://localhost:${port}`);
+    },
+  });
 }
 
 export function getMemory(id: string) {

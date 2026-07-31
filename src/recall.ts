@@ -1,6 +1,7 @@
 import type { MemoryStore } from './memory-store.js';
 import type { MemoryEntry, MemorySearchResult } from './types.js';
 import { recordEvent } from './db.js';
+import { pullDueRemoteSpaces, retryPendingTeamMemoryPushes } from './space-sync.js';
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
@@ -128,6 +129,14 @@ export async function buildRecallContext(
 
   let memories: { team: MemoryEntry[]; project: MemoryEntry[]; personal: MemoryEntry[] };
   try {
+    await Promise.race([
+      (async () => {
+        await retryPendingTeamMemoryPushes();
+        await pullDueRemoteSpaces();
+      })(),
+      new Promise(resolve => setTimeout(resolve, 1500)),
+    ]);
+
     if (query) {
       const remainingMs = Math.max(1, 2000 - (Date.now() - startedAt));
       const results = await withTimeout(store.search({ query, limit: Math.max(limit * 8, limit) }), remainingMs);
