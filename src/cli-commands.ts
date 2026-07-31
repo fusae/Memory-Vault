@@ -6,7 +6,10 @@ import { MemoryStore } from './memory-store.js';
 import { AuthService } from './auth.js';
 import { getSupabaseClient, createSupabaseClient } from './supabase.js';
 import type { MemoryType } from './types.js';
+import type { MemoryEntry, MemorySearchResult } from './types.js';
 import { getMemoryDbPath } from './path-utils.js';
+import { getDatabase } from './db.js';
+import { deriveProjectKey } from './project-key.js';
 
 const DB_PATH = getMemoryDbPath();
 
@@ -79,6 +82,104 @@ export function listMemories(opts: { type?: string; project?: string }) {
     console.log('');
   }
   console.log(`Total: ${memories.length} memories`);
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function ageDecay(createdAt: string, now = Date.now()): number {
+  const created = new Date(createdAt).getTime();
+  if (!Number.isFinite(created)) return 1;
+  const ageDays = Math.max(0, (now - created) / (24 * 60 * 60 * 1000));
+  return Math.pow(0.5, ageDays / 7);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('recall timeout')), ms);
+    promise.then(
+      value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      err => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+function formatRecallContext(memories: MemoryEntry[], budget: number): string {
+  if (memories.length === 0) return '';
+
+  const maxChars = Math.max(0, budget * 4);
+  const lines = [
+    '## 项目记忆(来自 memory-vault,本项目历史会话沉淀)',
+    ...memories.map(m => `- [来源:${m.source_tool ?? 'unknown'} ${m.created_at.slice(0, 10)}] ${m.content}`),
+  ];
+  const output = lines.join('\n');
+  return output.length > maxChars ? output.slice(0, maxChars) : output;
+}
+
+function sortByImportanceWithDecay(memories: MemoryEntry[]): MemoryEntry[] {
+  return [...memories].sort((a, b) => {
+    const scoreA = a.confidence * ageDecay(a.created_at);
+    const scoreB = b.confidence * ageDecay(b.created_at);
+    return scoreB - scoreA || b.created_at.localeCompare(a.created_at);
+  });
+}
+
+function sortBySemanticWithDecay(memories: MemorySearchResult[]): MemorySearchResult[] {
+  return [...memories].sort((a, b) => {
+    const similarityA = 1 / (1 + Math.max(0, a.distance));
+    const similarityB = 1 / (1 + Math.max(0, b.distance));
+    const scoreA = similarityA * ageDecay(a.created_at);
+    const scoreB = similarityB * ageDecay(b.created_at);
+    return scoreB - scoreA || b.created_at.localeCompare(a.created_at);
+  });
+}
+
+function fallbackRecall(store: MemoryStore, project: string, limit: number): MemoryEntry[] {
+  return store.list(undefined, project).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit);
+}
+
+export async function recallMemories(opts: { cwd?: string; format?: string; limit?: string; budget?: string; query?: string }) {
+  try {
+    const startedAt = Date.now();
+    const cwd = opts.cwd ?? process.cwd();
+    const project = deriveProjectKey(cwd);
+    const limit = parsePositiveInt(opts.limit, 10);
+    const budget = parsePositiveInt(opts.budget, 500);
+    const query = opts.query?.trim();
+    const store = getStore();
+
+    let memories: MemoryEntry[];
+    try {
+      if (query) {
+        const remainingMs = Math.max(1, 2000 - (Date.now() - startedAt));
+        const results = await withTimeout(store.search({ query, project, limit: Math.max(limit * 4, limit) }), remainingMs);
+        if (results.some(r => r.distance < 0)) throw new Error('embedding unavailable');
+        memories = sortBySemanticWithDecay(results).slice(0, limit);
+      } else {
+        memories = sortByImportanceWithDecay(store.list(undefined, project)).slice(0, limit);
+      }
+    } catch {
+      memories = fallbackRecall(store, project, limit);
+    }
+
+    const output = opts.format === undefined || opts.format === 'context'
+      ? formatRecallContext(memories, budget)
+      : '';
+    process.stdout.write(output);
+    return output;
+  } catch {
+    process.stdout.write('');
+    return '';
+  }
 }
 
 export function getMemory(id: string) {
@@ -272,7 +373,7 @@ function extractTranscriptText(content: unknown): string {
     .trim();
 }
 
-export async function extractMemories(opts: { file?: string; transcript?: boolean }) {
+export async function extractMemories(opts: { file?: string; transcript?: boolean; projectKey?: string }) {
   let conversation: string;
 
   if (opts.file) {
@@ -324,6 +425,10 @@ export async function extractMemories(opts: { file?: string; transcript?: boolea
     conversation = conversation.slice(-MAX_CHARS);
   }
 
+  const projectInstruction = opts.projectKey
+    ? `- project: The project field must use this exact value: ${opts.projectKey}`
+    : '- project: Project name if related to a specific project';
+
   const prompt = `You are a memory extraction engine. Analyze the following conversation between a user and an AI, and extract information worth remembering long-term.
 
 Extraction rules:
@@ -338,7 +443,7 @@ For each extracted memory, call the memory_write tool with these parameters:
 - content: One natural language sentence
 - confidence: 0.0-1.0
 - tags: Array of relevant tags
-- project: Project name if related to a specific project
+${projectInstruction}
 
 If there is nothing worth remembering, say "No memories to extract."
 
@@ -349,6 +454,40 @@ Conversation:
 ${conversation}`;
 
   console.log(prompt);
+}
+
+export function migrateProjects(opts: { map?: string; dryRun?: boolean }) {
+  if (!opts.map) {
+    console.error('Missing --map <old>=<project-key>');
+    process.exit(1);
+  }
+
+  const separator = opts.map.indexOf('=');
+  if (separator <= 0 || separator === opts.map.length - 1) {
+    console.error('Invalid --map. Expected <old>=<project-key>.');
+    process.exit(1);
+  }
+
+  const oldProject = opts.map.slice(0, separator);
+  const projectKey = opts.map.slice(separator + 1);
+  getStore();
+  const db = getDatabase();
+  const row = db.prepare('SELECT COUNT(*) as count FROM memories WHERE project = ?').get(oldProject) as { count: number };
+
+  if (opts.dryRun) {
+    console.log(`Would update ${row.count} memories from "${oldProject}" to "${projectKey}".`);
+    return;
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE memories
+    SET project = ?,
+        sync_status = CASE WHEN sync_status = 'synced' THEN 'modified' ELSE sync_status END,
+        updated_at = ?
+    WHERE project = ?
+  `).run(projectKey, now, oldProject);
+  console.log(`Updated ${row.count} memories from "${oldProject}" to "${projectKey}".`);
 }
 
 // ─── Helper: prompt for user input ───
