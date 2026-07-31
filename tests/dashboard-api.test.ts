@@ -101,6 +101,16 @@ describe('Dashboard API', () => {
     expect(data.byType.identity).toBe(1);
   });
 
+  it('GET /api/events returns recent events', async () => {
+    await store.write({ content: 'Event memory', type: 'identity', project: 'api-project', source_tool: 'test' });
+    const res = await app.request('/api/events?limit=10');
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data[0].event_type).toBe('write');
+    expect(data[0].project_key).toBe('api-project');
+    expect(data[0].source_tool).toBe('test');
+  });
+
   it('POST /api/memories/:id/forget soft-deletes', async () => {
     const r = await store.write({ content: 'To forget', type: 'episode' });
     const res = await app.request(`/api/memories/${r.memory.id}/forget`, {

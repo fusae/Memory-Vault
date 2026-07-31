@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { writeFileSync, appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { createDatabase, getDatabase } from './db.js';
+import { createDatabase, getDatabase, recordEvent } from './db.js';
 import { getEmbedding, OllamaUnavailableError } from './embedding.js';
 import type { CryptoService } from './crypto.js';
 import type {
@@ -13,6 +13,7 @@ import type {
   MemoryVersion,
   WriteMemoryResult,
 } from './types.js';
+import { scheduleAgentsMdRefresh } from './agents-md.js';
 
 const CONFLICT_DISTANCE_THRESHOLD = 0.3;
 
@@ -85,6 +86,17 @@ export class MemoryStore {
     };
   }
 
+  private afterWrite(memory: MemoryEntry, sourceCwd?: string): MemoryEntry {
+    recordEvent({
+      event_type: 'write',
+      project_key: memory.project ?? null,
+      source_tool: memory.source_tool ?? null,
+      detail: memory.content.slice(0, 160),
+    });
+    scheduleAgentsMdRefresh(this, memory.project, sourceCwd);
+    return memory;
+  }
+
   async write(input: CreateMemoryInput): Promise<WriteMemoryResult> {
     const db = getDatabase();
     const id = randomUUID();
@@ -141,7 +153,7 @@ export class MemoryStore {
           );
 
           return {
-            memory: this.get(conflict.id)!,
+            memory: this.afterWrite(this.get(conflict.id)!, input.source_cwd),
             conflict_action: autoPromote ? 'updated_existing' : 'created_pending_review',
             conflicting_memory_id: conflict.id,
           };
@@ -164,7 +176,7 @@ export class MemoryStore {
           db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(conflictRow.rowid), vecBuffer);
 
           return {
-            memory: this.get(conflict.id)!,
+            memory: this.afterWrite(this.get(conflict.id)!, input.source_cwd),
             conflict_action: 'updated_existing',
             conflicting_memory_id: conflict.id,
           };
@@ -183,7 +195,7 @@ export class MemoryStore {
         db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(row.rowid), vecBuffer);
 
         return {
-          memory: this.get(id)!,
+          memory: this.afterWrite(this.get(id)!, input.source_cwd),
           conflict_action: 'created_pending_review',
           conflicting_memory_id: conflict.id,
         };
@@ -203,7 +215,7 @@ export class MemoryStore {
     db.prepare('INSERT INTO vec_memories (rowid, embedding) VALUES (CAST(? AS INTEGER), ?)').run(Number(row.rowid), vecBuffer);
 
     return {
-      memory: this.get(id)!,
+      memory: this.afterWrite(this.get(id)!, input.source_cwd),
       conflict_action: 'created',
     };
   }

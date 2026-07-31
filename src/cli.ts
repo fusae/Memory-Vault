@@ -17,7 +17,11 @@ import {
   setupCommand,
   syncCommand,
   initEncryption,
+  migrateProjects,
+  recallMemories,
+  syncAgentsMdCommand,
 } from './cli-commands.js';
+import { deriveProjectKey } from './project-key.js';
 
 const program = new Command();
 
@@ -49,6 +53,27 @@ program
   .option('-t, --type <type>', 'Filter by type')
   .option('--project <project>', 'Filter by project')
   .action(listMemories);
+
+program
+  .command('recall')
+  .description('Inject project memories as context')
+  .requiredOption('--cwd <path>', 'Working directory for deriving the project key')
+  .option('--format <format>', 'Output format: context (default: context)')
+  .option('--limit <limit>', 'Max memories (default: 10)')
+  .option('--budget <budget>', 'Approximate token budget (default: 500)')
+  .action(async opts => {
+    await recallMemories(opts);
+  });
+
+program
+  .command('sync-agents-md')
+  .description('Sync project memories into AGENTS.md')
+  .option('--cwd <path>', 'Working directory for deriving the project key')
+  .option('--all', 'Sync all registered projects')
+  .option('--redact', 'Skip sensitive memory lines in managed block')
+  .action(async opts => {
+    await syncAgentsMdCommand(opts);
+  });
 
 program
   .command('get <id>')
@@ -86,7 +111,22 @@ program
   .description('Extract memories from conversation text or Claude Code transcript (.jsonl)')
   .option('-f, --file <path>', 'Read conversation from file (auto-detects .jsonl transcript format)')
   .option('--transcript', 'Force treating input as JSONL transcript format')
+  .option('--project-key <projectKey>', 'Use a canonical project key for extracted memories')
   .action(extractMemories);
+
+program
+  .command('migrate-projects')
+  .description('Bulk update memory project names to canonical project keys')
+  .requiredOption('--map <mapping>', 'Mapping in the form <old>=<project-key>')
+  .option('--dry-run', 'Print the number of affected memories without updating')
+  .action(migrateProjects);
+
+program
+  .command('project-key <cwd>', { hidden: true })
+  .description('Derive a canonical project key for a working directory')
+  .action((cwd: string) => {
+    console.log(deriveProjectKey(cwd));
+  });
 
 const auth = program.command('auth').description('Manage authentication');
 auth.command('login').description('Log in with email (Magic Link)').action(authLogin);

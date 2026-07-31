@@ -2,6 +2,8 @@ const API = '/api';
 
 // ─── State ───
 let currentView = 'timeline';
+let knownEventIds = new Set();
+let eventsLoaded = false;
 
 // ─── Tab Navigation ───
 document.querySelectorAll('.tab').forEach(tab => {
@@ -13,6 +15,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById(`view-${view}`).classList.add('active');
     currentView = view;
     if (view === 'timeline') loadTimeline();
+    if (view === 'events') loadEvents();
     if (view === 'health') loadHealth();
   });
 });
@@ -73,6 +76,41 @@ async function loadTimeline() {
   list.querySelectorAll('.memory-item').forEach(item => {
     item.addEventListener('click', () => openEditModal(item.dataset.id));
   });
+}
+
+// ─── Event Stream ───
+async function loadEvents() {
+  const res = await fetch(`${API}/events?limit=50`);
+  const events = await res.json();
+  const list = document.getElementById('event-list');
+  const count = document.getElementById('event-count');
+  count.textContent = `${events.length} events`;
+
+  if (events.length === 0) {
+    list.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:2rem">No events found.</p>';
+    eventsLoaded = true;
+    return;
+  }
+
+  list.innerHTML = events.map(e => {
+    const isNew = eventsLoaded && !knownEventIds.has(e.id);
+    return `
+      <div class="event-item ${isNew ? 'new' : ''}" data-id="${e.id}">
+        <span class="event-type event-${e.event_type}">${e.event_type}</span>
+        <div class="event-content">
+          <div class="event-meta">
+            <span>${escapeHtml(e.project_key || 'global')}</span>
+            <span>${escapeHtml(e.source_tool || 'unknown')}</span>
+            <span>${formatDate(e.created_at)}</span>
+          </div>
+          <p>${escapeHtml(e.detail || '')}</p>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  knownEventIds = new Set(events.map(e => e.id));
+  eventsLoaded = true;
 }
 
 // ─── Health Dashboard ───
@@ -258,6 +296,9 @@ function formatDate(iso) {
 // ─── Init ───
 loadTimeline();
 loadSyncStatus();
+setInterval(() => {
+  if (currentView === 'events') loadEvents();
+}, 2000);
 
 // ─── Sync ───
 async function loadSyncStatus() {

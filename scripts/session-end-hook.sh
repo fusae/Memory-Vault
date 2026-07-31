@@ -13,6 +13,7 @@ set -euo pipefail
 # Read hook payload from stdin
 PAYLOAD=$(cat -)
 TRANSCRIPT_PATH=$(echo "$PAYLOAD" | python3 -c "import json,sys; print(json.load(sys.stdin).get('transcript_path',''))" 2>/dev/null)
+CWD=$(echo "$PAYLOAD" | python3 -c "import json,sys; print(json.load(sys.stdin).get('cwd',''))" 2>/dev/null)
 
 if [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
   exit 0
@@ -29,7 +30,16 @@ memory-vault-cli organize --auto 2>/dev/null || true
 
 # Extract memories from transcript via claude
 # The prompt instructs Claude to call memory_write via the MCP server
-PROMPT=$(memory-vault-cli extract -f "$TRANSCRIPT_PATH" 2>/dev/null)
+PROJECT_KEY=""
+if [ -n "$CWD" ]; then
+  PROJECT_KEY=$(memory-vault-cli project-key "$CWD" 2>/dev/null || true)
+fi
+
+if [ -n "$PROJECT_KEY" ]; then
+  PROMPT=$(memory-vault-cli extract -f "$TRANSCRIPT_PATH" --project-key "$PROJECT_KEY" 2>/dev/null)
+else
+  PROMPT=$(memory-vault-cli extract -f "$TRANSCRIPT_PATH" 2>/dev/null)
+fi
 
 if [ -n "$PROMPT" ]; then
   # Run in background to not block session exit

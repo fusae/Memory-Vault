@@ -7,6 +7,10 @@ import { AuthService } from './auth.js';
 import { getSupabaseClient, createSupabaseClient } from './supabase.js';
 import type { MemoryType } from './types.js';
 import { getMemoryDbPath } from './path-utils.js';
+import { getDatabase } from './db.js';
+import { deriveProjectKey } from './project-key.js';
+import { buildRecallContext } from './recall.js';
+import { registerProject, syncAgentsMd } from './agents-md.js';
 
 const DB_PATH = getMemoryDbPath();
 
@@ -79,6 +83,31 @@ export function listMemories(opts: { type?: string; project?: string }) {
     console.log('');
   }
   console.log(`Total: ${memories.length} memories`);
+}
+
+export async function recallMemories(opts: { cwd?: string; format?: string; limit?: string; budget?: string; query?: string }) {
+  try {
+    const cwd = opts.cwd ?? process.cwd();
+    const project = deriveProjectKey(cwd);
+    const store = getStore();
+    const output = await buildRecallContext(store, { project, format: opts.format, limit: opts.limit, budget: opts.budget, query: opts.query, sourceTool: 'cli' });
+    process.stdout.write(output);
+    return output;
+  } catch {
+    process.stdout.write('');
+    return '';
+  }
+}
+
+export async function syncAgentsMdCommand(opts: { cwd?: string; all?: boolean; redact?: boolean }) {
+  try {
+    const store = getStore();
+    if (!opts.all) {
+      const cwd = opts.cwd ?? process.cwd();
+      registerProject(deriveProjectKey(cwd), path.join(cwd, 'AGENTS.md'));
+    }
+    await syncAgentsMd(store, opts);
+  } catch { /* silent degradation */ }
 }
 
 export function getMemory(id: string) {
@@ -272,7 +301,7 @@ function extractTranscriptText(content: unknown): string {
     .trim();
 }
 
-export async function extractMemories(opts: { file?: string; transcript?: boolean }) {
+export async function extractMemories(opts: { file?: string; transcript?: boolean; projectKey?: string }) {
   let conversation: string;
 
   if (opts.file) {
@@ -324,6 +353,10 @@ export async function extractMemories(opts: { file?: string; transcript?: boolea
     conversation = conversation.slice(-MAX_CHARS);
   }
 
+  const projectInstruction = opts.projectKey
+    ? `- project: The project field must use this exact value: ${opts.projectKey}`
+    : '- project: Project name if related to a specific project';
+
   const prompt = `You are a memory extraction engine. Analyze the following conversation between a user and an AI, and extract information worth remembering long-term.
 
 Extraction rules:
@@ -338,7 +371,8 @@ For each extracted memory, call the memory_write tool with these parameters:
 - content: One natural language sentence
 - confidence: 0.0-1.0
 - tags: Array of relevant tags
-- project: Project name if related to a specific project
+${projectInstruction}
+- source_cwd: Current working directory if known
 
 If there is nothing worth remembering, say "No memories to extract."
 
@@ -349,6 +383,40 @@ Conversation:
 ${conversation}`;
 
   console.log(prompt);
+}
+
+export function migrateProjects(opts: { map?: string; dryRun?: boolean }) {
+  if (!opts.map) {
+    console.error('Missing --map <old>=<project-key>');
+    process.exit(1);
+  }
+
+  const separator = opts.map.indexOf('=');
+  if (separator <= 0 || separator === opts.map.length - 1) {
+    console.error('Invalid --map. Expected <old>=<project-key>.');
+    process.exit(1);
+  }
+
+  const oldProject = opts.map.slice(0, separator);
+  const projectKey = opts.map.slice(separator + 1);
+  getStore();
+  const db = getDatabase();
+  const row = db.prepare('SELECT COUNT(*) as count FROM memories WHERE project = ?').get(oldProject) as { count: number };
+
+  if (opts.dryRun) {
+    console.log(`Would update ${row.count} memories from "${oldProject}" to "${projectKey}".`);
+    return;
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(`
+    UPDATE memories
+    SET project = ?,
+        sync_status = CASE WHEN sync_status = 'synced' THEN 'modified' ELSE sync_status END,
+        updated_at = ?
+    WHERE project = ?
+  `).run(projectKey, now, oldProject);
+  console.log(`Updated ${row.count} memories from "${oldProject}" to "${projectKey}".`);
 }
 
 // ─── Helper: prompt for user input ───

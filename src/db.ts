@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { MemoryEvent, MemoryEventType } from './types.js';
 
 const EMBEDDING_DIMENSIONS = 768; // nomic-embed-text via Ollama
 
@@ -76,6 +77,26 @@ export function createDatabase(dbPath: string): Database.Database {
     )
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      project_key TEXT PRIMARY KEY,
+      agents_md_path TEXT NOT NULL,
+      registered_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_type TEXT NOT NULL CHECK(event_type IN ('write','recall','sync')),
+      project_key TEXT,
+      source_tool TEXT,
+      detail TEXT,
+      created_at TEXT NOT NULL
+    )
+  `);
+
   // Migration: add is_encrypted to memory_versions
   const versionColumns = db.pragma('table_info(memory_versions)') as { name: string }[];
   if (!versionColumns.some(c => c.name === 'is_encrypted')) {
@@ -84,6 +105,33 @@ export function createDatabase(dbPath: string): Database.Database {
 
   _db = db;
   return db;
+}
+
+export function recordEvent(input: {
+  event_type: MemoryEventType;
+  project_key?: string | null;
+  source_tool?: string | null;
+  detail?: string | null;
+}): void {
+  try {
+    getDatabase().prepare(`
+      INSERT INTO events (event_type, project_key, source_tool, detail, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      input.event_type,
+      input.project_key ?? null,
+      input.source_tool ?? null,
+      input.detail ?? null,
+      new Date().toISOString()
+    );
+  } catch { /* silent instrumentation */ }
+}
+
+export function listEvents(limit = 50): MemoryEvent[] {
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.min(Math.floor(limit), 200) : 50;
+  return getDatabase().prepare(`
+    SELECT * FROM events ORDER BY created_at DESC, id DESC LIMIT ?
+  `).all(safeLimit) as MemoryEvent[];
 }
 
 export function getDatabase(): Database.Database {

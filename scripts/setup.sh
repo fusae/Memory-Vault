@@ -12,7 +12,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 step=0
-total=6
+total=8
 
 header() {
   step=$((step + 1))
@@ -119,7 +119,80 @@ else
   skip "Codex CLI not installed"
 fi
 
-# ─── Step 5: Encryption ───
+# ─── Step 5: Claude Code Hooks ───
+header "Claude Code Hooks" "Inject recall context at session start and extract memories at session end"
+
+SESSION_START_HOOK="$SCRIPT_DIR/session-start-hook.sh"
+SESSION_END_HOOK="$SCRIPT_DIR/session-end-hook.sh"
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+
+configure_claude_hooks() {
+  mkdir -p "$(dirname "$CLAUDE_SETTINGS")"
+  python3 - "$CLAUDE_SETTINGS" "$SESSION_START_HOOK" "$SESSION_END_HOOK" <<'PY'
+import json
+import sys
+
+settings_path, start_hook, end_hook = sys.argv[1:]
+try:
+    with open(settings_path, "r", encoding="utf-8") as f:
+        settings = json.load(f)
+except Exception:
+    settings = {}
+
+hooks = settings.setdefault("hooks", {})
+if not isinstance(hooks, dict):
+    hooks = {}
+    settings["hooks"] = hooks
+
+def ensure(event, command):
+    entries = hooks.setdefault(event, [])
+    if not isinstance(entries, list):
+        entries = []
+        hooks[event] = entries
+    for entry in entries:
+        for hook in entry.get("hooks", []):
+            if hook.get("type") == "command" and hook.get("command") == command:
+                return False
+    entries.append({"hooks": [{"type": "command", "command": command}]})
+    return True
+
+changed = False
+changed = ensure("SessionStart", start_hook) or changed
+changed = ensure("SessionEnd", end_hook) or changed
+
+with open(settings_path, "w", encoding="utf-8") as f:
+    json.dump(settings, f, indent=2)
+    f.write("\n")
+
+print("changed" if changed else "unchanged")
+PY
+}
+
+if command -v claude &>/dev/null; then
+  if ask_yn "Configure Claude Code SessionStart/SessionEnd hooks?"; then
+    HOOK_RESULT=$(configure_claude_hooks)
+    if [ "$HOOK_RESULT" = "changed" ]; then
+      success "Claude Code hooks configured"
+    else
+      success "Claude Code hooks already configured"
+    fi
+  else
+    skip "Claude Code hooks"
+  fi
+else
+  skip "Claude Code not installed"
+fi
+
+# ─── Step 6: AGENTS.md Sync ───
+header "AGENTS.md Sync" "Initialize current project memory block for Codex and opencode (optional)"
+
+if ask_yn "Sync current project AGENTS.md now?"; then
+  memory-vault-cli sync-agents-md --cwd "$PROJECT_DIR" 2>/dev/null && success "AGENTS.md synced" || fail "Failed to sync AGENTS.md"
+else
+  skip "AGENTS.md sync"
+fi
+
+# ─── Step 7: Encryption ───
 header "End-to-End Encryption" "Encrypt your memories with AES-256-GCM (optional)"
 
 if [ -f "$HOME/.memoryvault/crypto-salt" ]; then
@@ -131,7 +204,7 @@ else
   skip "Encryption (can enable later with: memory-vault-cli init-encryption)"
 fi
 
-# ─── Step 6: Cloud Sync ───
+# ─── Step 8: Cloud Sync ───
 header "Cloud Sync via Supabase" "Sync encrypted memories across devices (optional)"
 
 if [ -f "$HOME/.memoryvault/config.json" ] && grep -q "supabase_url" "$HOME/.memoryvault/config.json" 2>/dev/null; then
