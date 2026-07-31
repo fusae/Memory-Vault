@@ -76,6 +76,15 @@ export function createDatabase(dbPath: string): Database.Database {
     )
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      project_key TEXT PRIMARY KEY,
+      agents_md_path TEXT NOT NULL,
+      registered_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
   // Migration: add is_encrypted to memory_versions
   const versionColumns = db.pragma('table_info(memory_versions)') as { name: string }[];
   if (!versionColumns.some(c => c.name === 'is_encrypted')) {

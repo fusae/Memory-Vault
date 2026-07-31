@@ -6,10 +6,11 @@ import { MemoryStore } from './memory-store.js';
 import { AuthService } from './auth.js';
 import { getSupabaseClient, createSupabaseClient } from './supabase.js';
 import type { MemoryType } from './types.js';
-import type { MemoryEntry, MemorySearchResult } from './types.js';
 import { getMemoryDbPath } from './path-utils.js';
 import { getDatabase } from './db.js';
 import { deriveProjectKey } from './project-key.js';
+import { buildRecallContext } from './recall.js';
+import { registerProject, syncAgentsMd } from './agents-md.js';
 
 const DB_PATH = getMemoryDbPath();
 
@@ -84,102 +85,29 @@ export function listMemories(opts: { type?: string; project?: string }) {
   console.log(`Total: ${memories.length} memories`);
 }
 
-function parsePositiveInt(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
-  const parsed = parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function ageDecay(createdAt: string, now = Date.now()): number {
-  const created = new Date(createdAt).getTime();
-  if (!Number.isFinite(created)) return 1;
-  const ageDays = Math.max(0, (now - created) / (24 * 60 * 60 * 1000));
-  return Math.pow(0.5, ageDays / 7);
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('recall timeout')), ms);
-    promise.then(
-      value => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      err => {
-        clearTimeout(timer);
-        reject(err);
-      }
-    );
-  });
-}
-
-function formatRecallContext(memories: MemoryEntry[], budget: number): string {
-  if (memories.length === 0) return '';
-
-  const maxChars = Math.max(0, budget * 4);
-  const lines = [
-    '## 项目记忆(来自 memory-vault,本项目历史会话沉淀)',
-    ...memories.map(m => `- [来源:${m.source_tool ?? 'unknown'} ${m.created_at.slice(0, 10)}] ${m.content}`),
-  ];
-  const output = lines.join('\n');
-  return output.length > maxChars ? output.slice(0, maxChars) : output;
-}
-
-function sortByImportanceWithDecay(memories: MemoryEntry[]): MemoryEntry[] {
-  return [...memories].sort((a, b) => {
-    const scoreA = a.confidence * ageDecay(a.created_at);
-    const scoreB = b.confidence * ageDecay(b.created_at);
-    return scoreB - scoreA || b.created_at.localeCompare(a.created_at);
-  });
-}
-
-function sortBySemanticWithDecay(memories: MemorySearchResult[]): MemorySearchResult[] {
-  return [...memories].sort((a, b) => {
-    const similarityA = 1 / (1 + Math.max(0, a.distance));
-    const similarityB = 1 / (1 + Math.max(0, b.distance));
-    const scoreA = similarityA * ageDecay(a.created_at);
-    const scoreB = similarityB * ageDecay(b.created_at);
-    return scoreB - scoreA || b.created_at.localeCompare(a.created_at);
-  });
-}
-
-function fallbackRecall(store: MemoryStore, project: string, limit: number): MemoryEntry[] {
-  return store.list(undefined, project).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit);
-}
-
 export async function recallMemories(opts: { cwd?: string; format?: string; limit?: string; budget?: string; query?: string }) {
   try {
-    const startedAt = Date.now();
     const cwd = opts.cwd ?? process.cwd();
     const project = deriveProjectKey(cwd);
-    const limit = parsePositiveInt(opts.limit, 10);
-    const budget = parsePositiveInt(opts.budget, 500);
-    const query = opts.query?.trim();
     const store = getStore();
-
-    let memories: MemoryEntry[];
-    try {
-      if (query) {
-        const remainingMs = Math.max(1, 2000 - (Date.now() - startedAt));
-        const results = await withTimeout(store.search({ query, project, limit: Math.max(limit * 4, limit) }), remainingMs);
-        if (results.some(r => r.distance < 0)) throw new Error('embedding unavailable');
-        memories = sortBySemanticWithDecay(results).slice(0, limit);
-      } else {
-        memories = sortByImportanceWithDecay(store.list(undefined, project)).slice(0, limit);
-      }
-    } catch {
-      memories = fallbackRecall(store, project, limit);
-    }
-
-    const output = opts.format === undefined || opts.format === 'context'
-      ? formatRecallContext(memories, budget)
-      : '';
+    const output = await buildRecallContext(store, { project, format: opts.format, limit: opts.limit, budget: opts.budget, query: opts.query });
     process.stdout.write(output);
     return output;
   } catch {
     process.stdout.write('');
     return '';
   }
+}
+
+export async function syncAgentsMdCommand(opts: { cwd?: string; all?: boolean; redact?: boolean }) {
+  try {
+    const store = getStore();
+    if (!opts.all) {
+      const cwd = opts.cwd ?? process.cwd();
+      registerProject(deriveProjectKey(cwd), path.join(cwd, 'AGENTS.md'));
+    }
+    await syncAgentsMd(store, opts);
+  } catch { /* silent degradation */ }
 }
 
 export function getMemory(id: string) {
@@ -444,6 +372,7 @@ For each extracted memory, call the memory_write tool with these parameters:
 - confidence: 0.0-1.0
 - tags: Array of relevant tags
 ${projectInstruction}
+- source_cwd: Current working directory if known
 
 If there is nothing worth remembering, say "No memories to extract."
 

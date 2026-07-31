@@ -348,4 +348,87 @@ describe('CLI commands', () => {
 
     writeSpy.mockRestore();
   });
+
+  it('should create AGENTS.md managed block from recall context', async () => {
+    const { addMemory, syncAgentsMdCommand } = await import('../src/cli-commands.js');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const project = path.resolve(TEST_CWD);
+    const agentsPath = path.join(TEST_CWD, 'AGENTS.md');
+
+    await addMemory('agents md create memory', { type: 'project', project });
+    await syncAgentsMdCommand({ cwd: TEST_CWD });
+
+    const output = fs.readFileSync(agentsPath, 'utf-8');
+    expect(output).toContain('<!-- memory-vault:begin -->');
+    expect(output).toContain('agents md create memory');
+    expect(output).toContain('<!-- memory-vault:end -->');
+
+    logSpy.mockRestore();
+  });
+
+  it('should fully rewrite managed block without changing outside content', async () => {
+    const { addMemory, syncAgentsMdCommand } = await import('../src/cli-commands.js');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const project = path.resolve(TEST_CWD);
+    const agentsPath = path.join(TEST_CWD, 'AGENTS.md');
+    const before = 'user before\n';
+    const after = '\nuser after';
+    fs.writeFileSync(
+      agentsPath,
+      `${before}<!-- memory-vault:begin -->\nold managed content\n<!-- memory-vault:end -->${after}`,
+      'utf-8'
+    );
+
+    await addMemory('agents md rewritten memory', { type: 'project', project });
+    await syncAgentsMdCommand({ cwd: TEST_CWD });
+
+    const output = fs.readFileSync(agentsPath, 'utf-8');
+    expect(output.startsWith(before)).toBe(true);
+    expect(output.endsWith(after)).toBe(true);
+    expect(output).toContain('agents md rewritten memory');
+    expect(output).not.toContain('old managed content');
+
+    logSpy.mockRestore();
+  });
+
+  it('should register project and redact sensitive memory lines', async () => {
+    const { addMemory, syncAgentsMdCommand } = await import('../src/cli-commands.js');
+    const { getDatabase } = await import('../src/db.js');
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const project = path.resolve(TEST_CWD);
+    const agentsPath = path.join(TEST_CWD, 'AGENTS.md');
+
+    await addMemory('safe agents memory', { type: 'project', project });
+    await addMemory('api token should not be injected', { type: 'rule', project });
+    await syncAgentsMdCommand({ cwd: TEST_CWD, redact: true });
+
+    const row = getDatabase().prepare('SELECT * FROM projects WHERE project_key = ?').get(project) as { agents_md_path: string };
+    const output = fs.readFileSync(agentsPath, 'utf-8');
+    expect(row.agents_md_path).toBe(agentsPath);
+    expect(output).toContain('safe agents memory');
+    expect(output).not.toContain('api token should not be injected');
+
+    logSpy.mockRestore();
+  });
+
+  it('should auto-register and refresh after writes with source cwd', async () => {
+    const { MemoryStore } = await import('../src/memory-store.js');
+    const { getDatabase } = await import('../src/db.js');
+    const store = new MemoryStore(TEST_DB);
+    const project = path.resolve(TEST_CWD);
+    const agentsPath = path.join(TEST_CWD, 'AGENTS.md');
+
+    await store.write({ content: 'auto registered memory', type: 'project', project, source_cwd: TEST_CWD });
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    const row = getDatabase().prepare('SELECT * FROM projects WHERE project_key = ?').get(project) as { agents_md_path: string };
+    expect(row.agents_md_path).toBe(agentsPath);
+    expect(fs.readFileSync(agentsPath, 'utf-8')).toContain('auto registered memory');
+  });
+
+  it('should silently ignore sync errors', async () => {
+    const { syncAgentsMdCommand } = await import('../src/cli-commands.js');
+
+    await expect(syncAgentsMdCommand({ cwd: '\0bad' })).resolves.toBeUndefined();
+  });
 });

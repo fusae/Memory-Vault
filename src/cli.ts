@@ -19,6 +19,7 @@ import {
   initEncryption,
   migrateProjects,
   recallMemories,
+  syncAgentsMdCommand,
 } from './cli-commands.js';
 import { deriveProjectKey } from './project-key.js';
 
@@ -62,6 +63,16 @@ program
   .option('--budget <budget>', 'Approximate token budget (default: 500)')
   .action(async opts => {
     await recallMemories(opts);
+  });
+
+program
+  .command('sync-agents-md')
+  .description('Sync project memories into AGENTS.md')
+  .option('--cwd <path>', 'Working directory for deriving the project key')
+  .option('--all', 'Sync all registered projects')
+  .option('--redact', 'Skip sensitive memory lines in managed block')
+  .action(async opts => {
+    await syncAgentsMdCommand(opts);
   });
 
 program

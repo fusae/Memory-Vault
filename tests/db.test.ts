@@ -26,6 +26,14 @@ describe('createDatabase', () => {
     expect(tables?.name).toBe('vec_memories');
   });
 
+  it('should create projects table', () => {
+    const db = createDatabase(TEST_DB);
+    const table = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='projects'"
+    ).get() as { name: string } | undefined;
+    expect(table?.name).toBe('projects');
+  });
+
   it('should load sqlite-vec extension', () => {
     const db = createDatabase(TEST_DB);
     const result = db.prepare('SELECT vec_version() as version').get() as { version: string };

@@ -51,6 +51,7 @@ export interface CreateMemoryInput {
   source_tool?: string;
   source_excerpt?: string;
   source_conversation_id?: string;
+  source_cwd?: string;
   expires_at?: string;
 }
 

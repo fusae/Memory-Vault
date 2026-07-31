@@ -131,6 +131,7 @@ server.registerTool(
       confidence: z.number().min(0).max(1).optional().describe('Confidence 0-1, default 0.8'),
       source_tool: z.string().optional().describe('Source tool, e.g. "claude-desktop", "cursor"'),
       source_conversation_id: z.string().optional().describe('Conversation ID where this memory originated'),
+      source_cwd: z.string().optional().describe('Source working directory, when known'),
       expires_at: z.string().optional().describe('ISO 8601 expiration date, optional'),
     }),
   },
@@ -581,6 +582,7 @@ For each extracted memory, call the memory_write tool with these parameters:
 - confidence: 0.0-1.0, based on certainty
 - tags: Array of relevant tags
 - project: Project name if related to a specific project
+- source_cwd: Current working directory if known
 
 If there is nothing worth remembering, say "No memories to extract from this conversation."
 
