@@ -20,6 +20,9 @@ import {
   migrateProjects,
   recallMemories,
   syncAgentsMdCommand,
+  promoteMemory,
+  joinSpace,
+  listSpaces,
 } from './cli-commands.js';
 import { deriveProjectKey } from './project-key.js';
 
@@ -37,6 +40,8 @@ program
   .option('--tags <tags>', 'Comma-separated tags')
   .option('--project <project>', 'Associated project name')
   .option('--confidence <confidence>', 'Confidence 0-1')
+  .option('--scope <scope>', 'Memory scope: personal | team')
+  .option('--space-id <spaceId>', 'Team space id')
   .action(addMemory);
 
 program
@@ -120,6 +125,21 @@ program
   .requiredOption('--map <mapping>', 'Mapping in the form <old>=<project-key>')
   .option('--dry-run', 'Print the number of affected memories without updating')
   .action(migrateProjects);
+
+program
+  .command('promote <memory-id>')
+  .description('Promote a personal memory to a team space')
+  .requiredOption('--space <space_id>', 'Team space id')
+  .action(promoteMemory);
+
+const space = program.command('space').description('Manage local team spaces');
+space.command('join <space_id>')
+  .description('Join a local team space')
+  .requiredOption('--name <name>', 'Space name')
+  .action(joinSpace);
+space.command('list')
+  .description('List joined team spaces')
+  .action(listSpaces);
 
 program
   .command('project-key <cwd>', { hidden: true })

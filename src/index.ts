@@ -133,6 +133,8 @@ server.registerTool(
       source_conversation_id: z.string().optional().describe('Conversation ID where this memory originated'),
       source_cwd: z.string().optional().describe('Source working directory, when known'),
       expires_at: z.string().optional().describe('ISO 8601 expiration date, optional'),
+      scope: z.string().optional().describe('Memory scope: personal | team. Invalid values default to personal.'),
+      space_id: z.string().optional().describe('Required when scope is team.'),
     }),
   },
   async (input) => {

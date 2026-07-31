@@ -24,7 +24,7 @@ function getStore(): MemoryStore {
   return _store;
 }
 
-export async function addMemory(content: string, opts: { type: string; tags?: string; project?: string; confidence?: string }) {
+export async function addMemory(content: string, opts: { type: string; tags?: string; project?: string; confidence?: string; scope?: string; spaceId?: string }) {
   const store = getStore();
   const result = await store.write({
     content,
@@ -33,6 +33,8 @@ export async function addMemory(content: string, opts: { type: string; tags?: st
     project: opts.project,
     confidence: opts.confidence ? parseFloat(opts.confidence) : undefined,
     source_tool: 'cli',
+    scope: opts.scope,
+    space_id: opts.spaceId,
   });
   const memory = result.memory;
   console.log(`✓ Memory created: ${memory.id}`);
@@ -42,6 +44,43 @@ export async function addMemory(content: string, opts: { type: string; tags?: st
   if (result.conflict_action !== 'created') {
     console.log(`  Conflict: ${result.conflict_action}`);
   }
+}
+
+export function promoteMemory(id: string, opts: { space?: string }) {
+  if (!opts.space?.trim()) {
+    console.error('Missing --space <space_id>');
+    process.exit(1);
+  }
+
+  const store = getStore();
+  const memory = store.promoteToTeam(id, opts.space.trim());
+  console.log(`✓ Memory promoted: ${memory.id}`);
+  console.log(`  Scope: ${memory.scope}`);
+  console.log(`  Space: ${memory.space_id}`);
+}
+
+export function joinSpace(spaceId: string, opts: { name?: string }) {
+  const store = getStore();
+  const space = store.joinSpace(spaceId, opts.name);
+  console.log(`✓ Space joined: ${space.space_id}`);
+  console.log(`  Name: ${space.name}`);
+}
+
+export function listSpaces() {
+  const store = getStore();
+  const spaces = store.listSpaces();
+
+  if (spaces.length === 0) {
+    console.log('No spaces joined.');
+    return;
+  }
+
+  for (const space of spaces) {
+    console.log(`[${space.space_id}] ${space.name}`);
+    console.log(`  Joined: ${space.joined_at}`);
+    console.log('');
+  }
+  console.log(`Total: ${spaces.length} spaces`);
 }
 
 export async function searchMemories(query: string, opts: { type?: string; project?: string; limit?: string }) {

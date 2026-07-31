@@ -34,6 +34,29 @@ describe('Database migration', () => {
     expect(tables).toHaveLength(1);
   });
 
+  it('should add scope columns with personal defaults', () => {
+    const db = createDatabase(TEST_DB);
+    const columns = db.pragma('table_info(memories)') as { name: string }[];
+    expect(columns.some(c => c.name === 'scope')).toBe(true);
+    expect(columns.some(c => c.name === 'space_id')).toBe(true);
+
+    db.prepare(`
+      INSERT INTO memories (id, type, content, tags, created_at, updated_at)
+      VALUES ('m1', 'preference', 'old memory', '[]', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')
+    `).run();
+    const row = db.prepare('SELECT scope, space_id FROM memories WHERE id = ?').get('m1') as { scope: string; space_id: string | null };
+    expect(row.scope).toBe('personal');
+    expect(row.space_id).toBeNull();
+  });
+
+  it('should create spaces table', () => {
+    const db = createDatabase(TEST_DB);
+    const tables = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='spaces'"
+    ).all();
+    expect(tables).toHaveLength(1);
+  });
+
   it('should handle being called twice without error (idempotent)', () => {
     createDatabase(TEST_DB);
     closeDatabase();
