@@ -307,7 +307,7 @@ describe('CLI commands', () => {
     const project = path.resolve(TEST_CWD);
 
     joinSpace('space-a', { name: 'Alpha Team' });
-    await addMemory('team shared recall memory', { type: 'rule', scope: 'team', spaceId: 'space-a' });
+    await addMemory('team shared recall memory', { type: 'rule', project, scope: 'team', spaceId: 'space-a' });
     await addMemory('project scoped recall memory', { type: 'project', project });
     await addMemory('global personal recall memory', { type: 'preference' });
     await addMemory('unjoined team recall memory', { type: 'episode', scope: 'team', spaceId: 'space-b' });
@@ -315,6 +315,8 @@ describe('CLI commands', () => {
     const output = await recallMemories({ cwd: TEST_CWD, format: 'context', budget: '120' });
 
     expect(output).toContain('[团队记忆|来源:');
+    expect(output).toContain('|版本:1|置信度:');
+    expect(output).toMatch(/\|memory_ref:[0-9a-f-]+@1\]/);
     expect(output).toContain('team shared recall memory');
     expect(output).toContain('project scoped recall memory');
     expect(output).toContain('global personal recall memory');
@@ -333,7 +335,7 @@ describe('CLI commands', () => {
     await addMemory('project rollover memory one', { type: 'project', project });
     await addMemory('project rollover memory two', { type: 'rule', project });
 
-    const output = await recallMemories({ cwd: TEST_CWD, format: 'context', budget: '40' });
+    const output = await recallMemories({ cwd: TEST_CWD, format: 'context', budget: '70' });
 
     expect(output).toContain('project rollover memory one');
     expect(output).toContain('project rollover memory two');
@@ -445,9 +447,10 @@ describe('CLI commands', () => {
     const { addMemory, joinSpace, syncAgentsMdCommand } = await import('../src/cli-commands.js');
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const agentsPath = path.join(TEST_CWD, 'AGENTS.md');
+    const project = path.resolve(TEST_CWD);
 
     joinSpace('agents-space', { name: 'Agents Team' });
-    await addMemory('agents md team memory', { type: 'rule', scope: 'team', spaceId: 'agents-space' });
+    await addMemory('agents md team memory', { type: 'rule', project, scope: 'team', spaceId: 'agents-space' });
     await syncAgentsMdCommand({ cwd: TEST_CWD });
 
     const output = fs.readFileSync(agentsPath, 'utf-8');

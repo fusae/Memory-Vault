@@ -34,6 +34,36 @@ describe('Database migration', () => {
     expect(tables).toHaveLength(1);
   });
 
+  it('should create reliable agent event and outbox tables', () => {
+    const db = createDatabase(TEST_DB);
+    const tables = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('agent_events','event_outbox') ORDER BY name"
+    ).all() as { name: string }[];
+    expect(tables.map(row => row.name)).toEqual(['agent_events', 'event_outbox']);
+  });
+
+  it('should create policy and policy version tables', () => {
+    const db = createDatabase(TEST_DB);
+    const tables = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('policies','policy_versions') ORDER BY name"
+    ).all() as { name: string }[];
+    expect(tables.map(row => row.name)).toEqual(['policies', 'policy_versions']);
+    const policyColumns = db.pragma('table_info(policies)') as { name: string }[];
+    const versionColumns = db.pragma('table_info(policy_versions)') as { name: string }[];
+    expect(policyColumns.some(column => column.name === 'tool_boundaries')).toBe(true);
+    expect(versionColumns.some(column => column.name === 'tool_boundaries')).toBe(true);
+  });
+
+  it('should add tenant and source event boundaries to memories', () => {
+    const db = createDatabase(TEST_DB);
+    const columns = db.pragma('table_info(memories)') as { name: string }[];
+    expect(columns.some(c => c.name === 'tenant_id')).toBe(true);
+    expect(columns.some(c => c.name === 'source_event_id')).toBe(true);
+    expect(columns.some(c => c.name === 'revision')).toBe(true);
+    expect(columns.some(c => c.name === 'sensitivity')).toBe(true);
+    expect(columns.some(c => c.name === 'review_reason')).toBe(true);
+  });
+
   it('should create sweep_state table', () => {
     const db = createDatabase(TEST_DB);
     const tables = db.prepare(
@@ -71,6 +101,7 @@ describe('Database migration', () => {
     expect(columns.some(c => c.name === 'remote_url')).toBe(true);
     expect(columns.some(c => c.name === 'remote_token')).toBe(true);
     expect(columns.some(c => c.name === 'last_pulled_at')).toBe(true);
+    expect(columns.some(c => c.name === 'pull_cursor')).toBe(true);
   });
 
   it('should handle being called twice without error (idempotent)', () => {

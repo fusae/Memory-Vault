@@ -16,6 +16,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     currentView = view;
     if (view === 'timeline') loadTimeline();
     if (view === 'events') loadEvents();
+    if (view === 'operations') loadOperations();
     if (view === 'health') loadHealth();
   });
 });
@@ -77,6 +78,117 @@ async function loadTimeline() {
     item.addEventListener('click', () => openEditModal(item.dataset.id));
   });
 }
+
+// ─── Agent Operations ───
+async function loadOperations() {
+  const traceId = document.getElementById('filter-trace').value.trim();
+  const eventQuery = traceId ? `?limit=50&trace_id=${encodeURIComponent(traceId)}` : '?limit=50';
+  const [summary, events, outbox, reviews, workflows] = await Promise.all([
+    fetch(`${API}/operations`).then(res => res.json()),
+    fetch(`${API}/agent-events${eventQuery}`).then(res => res.json()),
+    fetch(`${API}/outbox?limit=50`).then(res => res.json()),
+    fetch(`${API}/memories?status=pending_review`).then(res => res.json()),
+    fetch(`${API}/workflows?status=awaiting_human_approval`).then(res => res.json()),
+  ]);
+
+  const pendingOutbox = (summary.outbox?.pending || 0) + (summary.outbox?.retry || 0) + (summary.outbox?.processing || 0);
+  document.getElementById('operations-summary').innerHTML = `
+    <div class="stat-card"><div class="value">${summary.agent_events || 0}</div><div class="label">Agent Events</div></div>
+    <div class="stat-card ${pendingOutbox ? 'warning' : ''}"><div class="value">${pendingOutbox}</div><div class="label">Outbox Pending</div></div>
+    <div class="stat-card ${(summary.outbox?.dead_letter || 0) ? 'danger' : ''}"><div class="value">${summary.outbox?.dead_letter || 0}</div><div class="label">Dead Letters</div></div>
+    <div class="stat-card ${summary.pending_review ? 'warning' : ''}"><div class="value">${summary.pending_review || 0}</div><div class="label">Pending Review</div></div>
+    <div class="stat-card ${summary.pending_workflow_approval ? 'warning' : ''}"><div class="value">${summary.pending_workflow_approval || 0}</div><div class="label">Human Approvals</div></div>
+    <div class="stat-card"><div class="value">${summary.redactions || 0}</div><div class="label">Secrets Redacted</div></div>
+    <div class="stat-card"><div class="value">${summary.policies?.approved || 0}</div><div class="label">Approved Policies</div></div>
+  `;
+
+  document.getElementById('workflow-review-list').innerHTML = workflows.length ? workflows.map(run => `
+    <article class="operation-row workflow-row">
+      <div><strong>${escapeHtml(run.task_id)}</strong><p>${escapeHtml(run.draft || '')}</p></div>
+      <div class="operation-meta">trace ${escapeHtml(run.trace_id)} · revision ${run.artifact_revision} · ${escapeHtml(run.review?.findings || '')}</div>
+      <div class="ref-list">${(run.required_policy_refs || []).map(ref => `<code>${escapeHtml(ref)}</code>`).join('')}</div>
+      <div class="review-actions">
+        <button class="btn btn-sm btn-primary" data-workflow-decision="approve" data-task-id="${escapeHtml(run.task_id)}" data-tenant-id="${escapeHtml(run.tenant_id)}">Publish</button>
+        <button class="btn btn-sm btn-danger-outline" data-workflow-decision="reject" data-task-id="${escapeHtml(run.task_id)}" data-tenant-id="${escapeHtml(run.tenant_id)}">Rollback</button>
+      </div>
+    </article>
+  `).join('') : '<p class="empty-state">No workflows awaiting human approval.</p>';
+
+  document.getElementById('review-list').innerHTML = reviews.length ? reviews.map(memory => `
+    <article class="operation-row review-row">
+      <div><strong>${escapeHtml(memory.memory_ref)}</strong><p>${escapeHtml(memory.content)}</p></div>
+      <div class="operation-meta">${escapeHtml(memory.project || 'global')} · ${escapeHtml(memory.sensitivity)} · ${escapeHtml(memory.review_reason || 'review requested')}</div>
+      <div class="review-actions">
+        <button class="btn btn-sm btn-primary" data-review="approve" data-id="${escapeHtml(memory.id)}">Approve</button>
+        <button class="btn btn-sm btn-danger-outline" data-review="reject" data-id="${escapeHtml(memory.id)}">Reject</button>
+      </div>
+    </article>
+  `).join('') : '<p class="empty-state">No pending reviews.</p>';
+
+  document.getElementById('outbox-list').innerHTML = outbox.length ? outbox.map(item => `
+    <article class="operation-row">
+      <div class="operation-heading"><span class="status-pill status-${escapeHtml(item.status)}">${escapeHtml(item.status)}</span>${escapeHtml(item.event_type)}</div>
+      <div class="operation-meta">${escapeHtml(item.task_id || 'no task')} · attempts ${item.attempts}/${item.max_attempts}</div>
+      ${item.last_error ? `<p class="operation-error">${escapeHtml(item.last_error)}</p>` : ''}
+    </article>
+  `).join('') : '<p class="empty-state">Outbox is empty.</p>';
+
+  document.getElementById('agent-event-list').innerHTML = events.length ? events.map(event => `
+    <article class="operation-row trace-row">
+      <div class="operation-heading"><span class="event-type">${escapeHtml(event.event_type)}</span>${escapeHtml(event.actor_id || 'runtime')}</div>
+      <div class="operation-meta">trace ${escapeHtml(event.trace_id || 'none')} · task ${escapeHtml(event.task_id || 'none')} · ${formatDate(event.occurred_at)}</div>
+      <p>${escapeHtml(JSON.stringify(event.payload))}</p>
+    </article>
+  `).join('') : '<p class="empty-state">No matching Agent events.</p>';
+
+  document.querySelectorAll('[data-review]').forEach(button => {
+    button.addEventListener('click', () => reviewMemory(button.dataset.id, button.dataset.review));
+  });
+  document.querySelectorAll('[data-workflow-decision]').forEach(button => {
+    button.addEventListener('click', () => decideWorkflow(button.dataset.taskId, button.dataset.tenantId, button.dataset.workflowDecision));
+  });
+  document.getElementById('operations-updated').textContent = `updated ${new Date().toLocaleTimeString()}`;
+}
+
+async function decideWorkflow(taskId, tenantId, decision) {
+  const reviewer = prompt('Human reviewer identity:');
+  if (!reviewer) return;
+  const reason = prompt(`Reason for ${decision}:`) || '';
+  const experienceContent = decision === 'approve'
+    ? (prompt('Reusable experience to save (optional):') || '').trim()
+    : '';
+  const response = await fetch(`${API}/workflows/${encodeURIComponent(taskId)}/decision`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      tenant_id: tenantId,
+      reviewer,
+      decision,
+      reason,
+      experience: experienceContent ? { content: experienceContent, type: 'episode', confidence: 0.9 } : undefined,
+    }),
+  });
+  const body = await response.json();
+  if (!response.ok) alert(body.error || 'Workflow decision failed');
+  await loadOperations();
+}
+
+async function reviewMemory(id, decision) {
+  const reviewer = prompt('Reviewer identity:');
+  if (!reviewer) return;
+  const reason = prompt(`Reason for ${decision}:`) || '';
+  const response = await fetch(`${API}/memories/${encodeURIComponent(id)}/review`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ decision, reviewer, reason }),
+  });
+  const body = await response.json();
+  if (!response.ok) alert(body.error || 'Review failed');
+  await loadOperations();
+}
+
+document.getElementById('btn-operations-refresh').addEventListener('click', loadOperations);
+document.getElementById('filter-trace').addEventListener('change', loadOperations);
 
 // ─── Event Stream ───
 async function loadEvents() {
@@ -277,7 +389,7 @@ document.getElementById('btn-cancel').addEventListener('click', () => modal.clos
 // ─── Helpers ───
 function escapeHtml(str) {
   const div = document.createElement('div');
-  div.textContent = str;
+  div.textContent = str ?? '';
   return div.innerHTML;
 }
 

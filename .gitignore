@@ -1,7 +1,9 @@
 node_modules/
+examples/agentteams-hospital-a/*.zip
 build/
 data/
 .env
 *.db
 .DS_Store
 ~/
+.tmp/

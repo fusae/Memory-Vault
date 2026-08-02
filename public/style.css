@@ -294,3 +294,41 @@ dialog h2 { margin-bottom: 1rem; font-size: 1.1rem; }
   font-size: 0.75rem;
   color: var(--text-muted);
 }
+
+.operations-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+.operations-panel {
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.operations-panel h2 { font-size: 0.9rem; margin-bottom: 0.75rem; }
+.trace-panel { margin-top: 1rem; }
+.operations-list { display: flex; flex-direction: column; gap: 0.5rem; }
+.operation-row { padding: 0.65rem; border: 1px solid var(--border); border-radius: 6px; }
+.operation-row p { margin-top: 0.3rem; font-size: 0.78rem; word-break: break-word; }
+.operation-heading { display: flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; font-weight: 600; }
+.operation-meta { margin-top: 0.25rem; color: var(--text-muted); font-family: var(--mono); font-size: 0.68rem; }
+.operation-error { color: var(--danger); }
+.review-actions { display: flex; gap: 0.4rem; margin-top: 0.55rem; }
+.ref-list { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.45rem; }
+.ref-list code { padding: 0.12rem 0.35rem; border-radius: 4px; background: var(--bg); color: var(--text-muted); font-size: 0.65rem; }
+.status-pill { border-radius: 999px; padding: 0.1rem 0.4rem; color: #fff; font-size: 0.65rem; }
+.status-completed { background: var(--badge-project); }
+.status-pending, .status-processing, .status-retry { background: var(--badge-episode); }
+.status-dead_letter { background: var(--danger); }
+.review-actions { display: flex; gap: 0.4rem; margin-top: 0.6rem; }
+.empty-state { color: var(--text-muted); text-align: center; padding: 1rem; font-size: 0.8rem; }
+.trace-row .event-type { min-width: auto; background: var(--primary); }
+
+@media (max-width: 720px) {
+  header { align-items: flex-start; flex-wrap: wrap; }
+  nav { order: 3; width: 100%; margin-left: 0; overflow-x: auto; }
+  .header-actions { margin-left: auto; }
+  .operations-grid { grid-template-columns: 1fr; }
+  main { padding: 1rem; }
+}

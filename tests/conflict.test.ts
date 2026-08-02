@@ -94,4 +94,44 @@ describe('Conflict Detection', () => {
     // Different types should not conflict
     expect(r2.conflict_action).toBe('created');
   });
+
+  it('should not conflict across tenant, project, scope, or space boundaries', async () => {
+    await store.write({
+      tenant_id: 'agency',
+      content: 'Hospital copy must use the full name',
+      type: 'rule',
+      project: 'hospital-a',
+      scope: 'team',
+      space_id: 'hospital-a-copy',
+    });
+
+    const differentProject = await store.write({
+      tenant_id: 'agency',
+      content: 'Hospital copy must use the full name',
+      type: 'rule',
+      project: 'hospital-b',
+      scope: 'team',
+      space_id: 'hospital-a-copy',
+    });
+    const differentSpace = await store.write({
+      tenant_id: 'agency',
+      content: 'Hospital copy must use the full name',
+      type: 'rule',
+      project: 'hospital-a',
+      scope: 'team',
+      space_id: 'hospital-a-review',
+    });
+    const differentTenant = await store.write({
+      tenant_id: 'another-agency',
+      content: 'Hospital copy must use the full name',
+      type: 'rule',
+      project: 'hospital-a',
+      scope: 'team',
+      space_id: 'hospital-a-copy',
+    });
+
+    expect(differentProject.conflict_action).toBe('created');
+    expect(differentSpace.conflict_action).toBe('created');
+    expect(differentTenant.conflict_action).toBe('created');
+  });
 });

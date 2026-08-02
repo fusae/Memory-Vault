@@ -71,8 +71,48 @@ export function createDatabase(dbPath: string): Database.Database {
   if (!columns.some(c => c.name === 'space_id')) {
     db.exec('ALTER TABLE memories ADD COLUMN space_id TEXT');
   }
+  if (!columns.some(c => c.name === 'tenant_id')) {
+    db.exec("ALTER TABLE memories ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'local'");
+  }
+  if (!columns.some(c => c.name === 'source_event_id')) {
+    db.exec('ALTER TABLE memories ADD COLUMN source_event_id TEXT');
+  }
+  if (!columns.some(c => c.name === 'revision')) {
+    db.exec('ALTER TABLE memories ADD COLUMN revision INTEGER NOT NULL DEFAULT 1');
+  }
+  if (!columns.some(c => c.name === 'recall_count')) {
+    db.exec('ALTER TABLE memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!columns.some(c => c.name === 'correction_count')) {
+    db.exec('ALTER TABLE memories ADD COLUMN correction_count INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!columns.some(c => c.name === 'last_recalled_at')) {
+    db.exec('ALTER TABLE memories ADD COLUMN last_recalled_at TEXT');
+  }
+  if (!columns.some(c => c.name === 'sensitivity')) {
+    db.exec("ALTER TABLE memories ADD COLUMN sensitivity TEXT NOT NULL DEFAULT 'normal'");
+  }
+  if (!columns.some(c => c.name === 'review_reason')) {
+    db.exec('ALTER TABLE memories ADD COLUMN review_reason TEXT');
+  }
+  if (!columns.some(c => c.name === 'reviewed_by')) {
+    db.exec('ALTER TABLE memories ADD COLUMN reviewed_by TEXT');
+  }
+  if (!columns.some(c => c.name === 'reviewed_at')) {
+    db.exec('ALTER TABLE memories ADD COLUMN reviewed_at TEXT');
+  }
+  if (!columns.some(c => c.name === 'encryption_scheme')) {
+    db.exec("ALTER TABLE memories ADD COLUMN encryption_scheme TEXT NOT NULL DEFAULT 'none'");
+    db.exec("UPDATE memories SET encryption_scheme = 'vault' WHERE is_encrypted = 1");
+  }
+  if (!columns.some(c => c.name === 'key_version')) {
+    db.exec('ALTER TABLE memories ADD COLUMN key_version INTEGER');
+  }
 
   db.exec("UPDATE memories SET scope = 'personal', space_id = NULL WHERE scope NOT IN ('personal','team') OR scope IS NULL OR (scope = 'personal' AND space_id IS NOT NULL)");
+  db.exec("UPDATE memories SET tenant_id = 'local' WHERE tenant_id IS NULL OR tenant_id = ''");
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_source_event ON memories(source_event_id) WHERE source_event_id IS NOT NULL');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_memories_boundary ON memories(tenant_id, project, scope, space_id, status)');
 
   // Create memory_versions table for version history
   db.exec(`
@@ -115,6 +155,60 @@ export function createDatabase(dbPath: string): Database.Database {
   if (!spaceColumns.some(c => c.name === 'last_pulled_at')) {
     db.exec('ALTER TABLE spaces ADD COLUMN last_pulled_at TEXT');
   }
+  if (!spaceColumns.some(c => c.name === 'pull_cursor')) {
+    db.exec('ALTER TABLE spaces ADD COLUMN pull_cursor TEXT');
+  }
+  if (!spaceColumns.some(c => c.name === 'encryption_required')) {
+    db.exec('ALTER TABLE spaces ADD COLUMN encryption_required INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!spaceColumns.some(c => c.name === 'local_member_id')) {
+    db.exec('ALTER TABLE spaces ADD COLUMN local_member_id TEXT');
+  }
+  if (!spaceColumns.some(c => c.name === 'key_version')) {
+    db.exec('ALTER TABLE spaces ADD COLUMN key_version INTEGER NOT NULL DEFAULT 0');
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS space_members (
+      space_id TEXT NOT NULL,
+      member_id TEXT NOT NULL,
+      encryption_public_key TEXT NOT NULL,
+      signing_public_key TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('owner','member')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','revoked')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY(space_id, member_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS space_key_envelopes (
+      space_id TEXT NOT NULL,
+      key_version INTEGER NOT NULL,
+      member_id TEXT NOT NULL,
+      sender_id TEXT NOT NULL,
+      ephemeral_public_key TEXT NOT NULL,
+      ciphertext TEXT NOT NULL,
+      signature TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(space_id, key_version, member_id)
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS space_access_tokens (
+      id TEXT PRIMARY KEY,
+      space_id TEXT NOT NULL,
+      member_id TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      role TEXT NOT NULL CHECK(role IN ('reader','writer','owner')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','revoked')),
+      created_at TEXT NOT NULL,
+      revoked_at TEXT
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_space_access ON space_access_tokens(space_id, member_id, status)');
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS events (
@@ -124,6 +218,134 @@ export function createDatabase(dbPath: string): Database.Database {
       source_tool TEXT,
       detail TEXT,
       created_at TEXT NOT NULL
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_events (
+      id TEXT PRIMARY KEY,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      tenant_id TEXT NOT NULL DEFAULT 'local',
+      event_type TEXT NOT NULL CHECK(event_type IN (
+        'task_started','task_handoff','message','tool_call','tool_result',
+        'task_completed','task_failed','feedback','memory_candidate'
+      )),
+      payload TEXT NOT NULL,
+      project TEXT,
+      scope TEXT NOT NULL DEFAULT 'personal' CHECK(scope IN ('personal','team')),
+      space_id TEXT,
+      task_id TEXT,
+      trace_id TEXT,
+      actor_id TEXT,
+      redaction_count INTEGER NOT NULL DEFAULT 0,
+      occurred_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      CHECK((scope = 'personal' AND space_id IS NULL) OR (scope = 'team' AND space_id IS NOT NULL))
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS event_outbox (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id TEXT NOT NULL UNIQUE REFERENCES agent_events(id) ON DELETE CASCADE,
+      topic TEXT NOT NULL DEFAULT 'memory.extract',
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','retry','completed','dead_letter')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      max_attempts INTEGER NOT NULL DEFAULT 5,
+      available_at TEXT NOT NULL,
+      locked_at TEXT,
+      processed_at TEXT,
+      last_error TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_event_outbox_due ON event_outbox(status, available_at, id)');
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS policies (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL DEFAULT 'local',
+      project TEXT NOT NULL,
+      space_id TEXT,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      tool_boundaries TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','approved','retired')),
+      revision INTEGER NOT NULL DEFAULT 1,
+      source TEXT,
+      approved_by TEXT,
+      approved_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  const policyColumns = db.pragma('table_info(policies)') as { name: string }[];
+  if (!policyColumns.some(c => c.name === 'tool_boundaries')) {
+    db.exec("ALTER TABLE policies ADD COLUMN tool_boundaries TEXT NOT NULL DEFAULT '[]'");
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_policies_boundary ON policies(tenant_id, project, space_id, status)');
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS policy_versions (
+      id TEXT PRIMARY KEY,
+      policy_id TEXT NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+      content TEXT NOT NULL,
+      tool_boundaries TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      reason TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    )
+  `);
+  const policyVersionColumns = db.pragma('table_info(policy_versions)') as { name: string }[];
+  if (!policyVersionColumns.some(c => c.name === 'tool_boundaries')) {
+    db.exec("ALTER TABLE policy_versions ADD COLUMN tool_boundaries TEXT NOT NULL DEFAULT '[]'");
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      trace_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      project TEXT NOT NULL,
+      space_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN (
+        'started','writing','reviewing','awaiting_human_approval','completed','rejected','failed'
+      )),
+      request TEXT NOT NULL,
+      draft TEXT,
+      review_json TEXT,
+      context_refs TEXT NOT NULL DEFAULT '[]',
+      required_policy_refs TEXT NOT NULL DEFAULT '[]',
+      artifact_revision INTEGER NOT NULL DEFAULT 0,
+      writer_id TEXT,
+      reviewer_id TEXT,
+      human_reviewer TEXT,
+      decision_reason TEXT,
+      decision_hash TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(tenant_id, task_id)
+    )
+  `);
+  const workflowColumns = db.pragma('table_info(workflow_runs)') as { name: string }[];
+  if (!workflowColumns.some(column => column.name === 'decision_hash')) {
+    db.exec('ALTER TABLE workflow_runs ADD COLUMN decision_hash TEXT');
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(tenant_id, project, space_id, status, updated_at)');
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS workflow_artifacts (
+      id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+      stage TEXT NOT NULL,
+      content TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      revision INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE(workflow_id, revision)
     )
   `);
 
@@ -138,6 +360,19 @@ export function createDatabase(dbPath: string): Database.Database {
   const versionColumns = db.pragma('table_info(memory_versions)') as { name: string }[];
   if (!versionColumns.some(c => c.name === 'is_encrypted')) {
     db.exec('ALTER TABLE memory_versions ADD COLUMN is_encrypted INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!versionColumns.some(c => c.name === 'revision')) {
+    db.exec('ALTER TABLE memory_versions ADD COLUMN revision INTEGER NOT NULL DEFAULT 1');
+  }
+  if (!versionColumns.some(c => c.name === 'encryption_scheme')) {
+    db.exec("ALTER TABLE memory_versions ADD COLUMN encryption_scheme TEXT NOT NULL DEFAULT 'none'");
+    db.exec("UPDATE memory_versions SET encryption_scheme = 'vault' WHERE is_encrypted = 1");
+  }
+  if (!versionColumns.some(c => c.name === 'space_id')) {
+    db.exec('ALTER TABLE memory_versions ADD COLUMN space_id TEXT');
+  }
+  if (!versionColumns.some(c => c.name === 'key_version')) {
+    db.exec('ALTER TABLE memory_versions ADD COLUMN key_version INTEGER');
   }
 
   _db = db;

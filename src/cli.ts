@@ -7,6 +7,7 @@ import {
   listMemories,
   getMemory,
   deleteMemory,
+  correctMemory,
   exportMemories,
   organizeMemories,
   synthesizeMemories,
@@ -24,6 +25,15 @@ import {
   joinSpace,
   listSpaces,
   serveSpaceCommand,
+  initSpaceIdentity,
+  exportSpaceIdentity,
+  initEncryptedSpace,
+  inviteSpaceMember,
+  acceptSpaceInvitation,
+  rotateSpaceKey,
+  revokeSpaceMember,
+  issueMemberToken,
+  addHttpPrincipal,
 } from './cli-commands.js';
 import { deriveProjectKey } from './project-key.js';
 import { sweepCodex } from './codex-sweep.js';
@@ -94,6 +104,12 @@ program
   .action(deleteMemory);
 
 program
+  .command('correct <memory-ref> <content>')
+  .description('Correct a recalled memory using its versioned memory_ref')
+  .option('--reason <reason>', 'Reason for the correction')
+  .action(correctMemory);
+
+program
   .command('export')
   .description('Export all memories')
   .option('-f, --format <format>', 'Output format: json | markdown (default: json)')
@@ -155,6 +171,46 @@ space.command('join <space_id>')
 space.command('list')
   .description('List joined team spaces')
   .action(listSpaces);
+space.command('identity-init <member_id>')
+  .description('Create the local X25519 and Ed25519 space identity')
+  .action(initSpaceIdentity);
+space.command('identity-export')
+  .description('Export only the public space identity')
+  .option('--output <file>', 'Write public identity JSON to a file')
+  .action(exportSpaceIdentity);
+space.command('init-encrypted <space_id>')
+  .description('Create an E2EE space and its first data key')
+  .option('--name <name>', 'Space name')
+  .action(initEncryptedSpace);
+space.command('invite <space_id> <public_identity_file>')
+  .description('Add a member and create a signed key invitation')
+  .option('--output <file>', 'Write invitation JSON to a file')
+  .action(inviteSpaceMember);
+space.command('accept <invitation_file>')
+  .description('Verify and accept a signed space invitation')
+  .action(acceptSpaceInvitation);
+space.command('rotate <space_id>')
+  .description('Rotate the space data key as its owner')
+  .action(rotateSpaceKey);
+space.command('revoke <space_id> <member_id>')
+  .description('Revoke a member and immediately rotate the space data key')
+  .action(revokeSpaceMember);
+space.command('issue-token <space_id> <member_id>')
+  .description('Issue a member-scoped remote access token')
+  .option('--role <role>', 'reader | writer | owner', 'writer')
+  .action(issueMemberToken);
+
+const httpPrincipal = program.command('http-principal').description('Manage HTTP MCP Agent Principals');
+httpPrincipal.command('add')
+  .description('Add a hash-only Agent Principal and generate a bearer token')
+  .requiredOption('--id <id>', 'Authenticated Agent or human id')
+  .requiredOption('--role <role>', 'admin | manager | writer | reviewer | human | observer')
+  .requiredOption('--tenant <tenant>', 'Allowed tenant id')
+  .requiredOption('--projects <projects>', 'Comma-separated project ids, or *')
+  .requiredOption('--spaces <spaces>', 'Comma-separated space ids, or *')
+  .option('--file <file>', 'Principal file (default: ~/.memoryvault/http-principals.json)')
+  .option('--token-env <name>', 'Hash an existing token from this environment variable instead of generating one')
+  .action(opts => { addHttpPrincipal(opts); });
 
 program
   .command('serve-space')

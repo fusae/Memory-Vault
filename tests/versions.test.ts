@@ -37,6 +37,9 @@ describe('Version History', () => {
     expect(versions[0].content).toBe('original content');
     expect(versions[0].reason).toBe('user corrected');
     expect(versions[0].memory_id).toBe(memory.id);
+    expect(versions[0].revision).toBe(1);
+    expect(versions[0].memory_ref).toBe(`${memory.id}@1`);
+    expect(store.get(memory.id)).toMatchObject({ revision: 2, memory_ref: `${memory.id}@2` });
   });
 
   it('should not create version entry when content is unchanged', async () => {
@@ -58,6 +61,8 @@ describe('Version History', () => {
     expect(versions).toHaveLength(2);
     expect(versions[0].content).toBe('v1');
     expect(versions[1].content).toBe('v2');
+    expect(versions.map(version => version.revision)).toEqual([1, 2]);
+    expect(store.get(memory.id)).toMatchObject({ revision: 3, memory_ref: `${memory.id}@3` });
   });
 
   it('should use default reason when none provided', async () => {
@@ -74,5 +79,21 @@ describe('Version History', () => {
     const result = await store.write({ content: 'no changes', type: 'identity' });
     const versions = store.getVersions(result.memory.id);
     expect(versions).toHaveLength(0);
+  });
+
+  it('should correct the exact recalled revision and reject stale references', async () => {
+    const result = await store.write({ content: 'Hospital A likes playful copy', type: 'preference' });
+    const corrected = await store.correct(result.memory.memory_ref, 'Hospital A prefers restrained copy', 'client correction');
+
+    expect(corrected).toMatchObject({
+      content: 'Hospital A prefers restrained copy',
+      revision: 2,
+      correction_count: 1,
+    });
+    expect(store.getVersions(result.memory.id)[0]).toMatchObject({
+      memory_ref: `${result.memory.id}@1`,
+      reason: 'client correction',
+    });
+    await expect(store.correct(result.memory.memory_ref, 'stale overwrite')).rejects.toThrow('Stale memory_ref');
   });
 });

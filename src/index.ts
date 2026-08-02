@@ -9,6 +9,13 @@ import { MemoryStore } from './memory-store.js';
 import { CryptoService } from './crypto.js';
 import { AuthService } from './auth.js';
 import { getMemoryDbPath } from './path-utils.js';
+import { PolicyStore } from './policy-store.js';
+import { AgentEventStore } from './event-store.js';
+import { MemoryWorker } from './memory-worker.js';
+import { buildRecallContext } from './recall.js';
+import { WorkflowGateway } from './workflow-gateway.js';
+import { SpaceKeyService } from './space-crypto.js';
+import type { McpPrincipal, McpPrincipalRole } from './mcp-principal.js';
 
 const DB_PATH = getMemoryDbPath();
 
@@ -18,7 +25,13 @@ const crypto = passphrase ? new CryptoService(passphrase) : undefined;
 if (crypto) {
   console.error('[MemoryVault] E2EE encryption enabled');
 }
-const store = new MemoryStore(DB_PATH, crypto);
+const spaceIdentity = SpaceKeyService.loadIdentity();
+const spaceKeys = spaceIdentity ? new SpaceKeyService(spaceIdentity) : undefined;
+const store = new MemoryStore(DB_PATH, crypto, spaceKeys);
+const policies = new PolicyStore();
+const agentEvents = new AgentEventStore();
+const memoryWorker = new MemoryWorker(agentEvents, store);
+const workflowGateway = new WorkflowGateway(agentEvents, store, policies, memoryWorker);
 
 // ─── Auto-Sync Setup ───
 // Try to establish sync connection if user has configured Supabase + logged in
@@ -61,13 +74,75 @@ async function backgroundSync(): Promise<string | null> {
 // Fire and forget — don't block server startup
 initAutoSync();
 
+const ROLE_TOOLS: Record<McpPrincipalRole, Set<string>> = {
+  admin: new Set(['*']),
+  manager: new Set(['workflow_start', 'workflow_get']),
+  writer: new Set(['workflow_recall', 'workflow_submit_draft', 'workflow_get']),
+  reviewer: new Set(['workflow_recall', 'workflow_submit_review', 'workflow_get']),
+  human: new Set(['workflow_human_decide', 'workflow_get']),
+  observer: new Set(['workflow_get']),
+};
+
+function allowedBoundary(values: string[], value: string): boolean {
+  return values.includes('*') || values.includes(value);
+}
+
+function authorizePrincipalTool(principal: McpPrincipal, toolName: string, input: Record<string, unknown>): void {
+  const allowedTools = ROLE_TOOLS[principal.role];
+  if (!allowedTools.has('*') && !allowedTools.has(toolName)) {
+    throw new Error(`MCP authorization denied: ${principal.role} cannot call ${toolName}`);
+  }
+  if (principal.role === 'admin') return;
+
+  const suppliedTenant = typeof input.tenant_id === 'string' ? input.tenant_id.trim() : '';
+  if (suppliedTenant && suppliedTenant !== principal.tenant_id) {
+    throw new Error('MCP authorization denied: tenant boundary mismatch');
+  }
+  input.tenant_id = principal.tenant_id;
+
+  if (toolName === 'workflow_start') {
+    const project = typeof input.project === 'string' ? input.project.trim() : '';
+    const spaceId = typeof input.space_id === 'string' ? input.space_id.trim() : '';
+    if (!allowedBoundary(principal.projects, project) || !allowedBoundary(principal.spaces, spaceId)) {
+      throw new Error('MCP authorization denied: project or space boundary mismatch');
+    }
+    if (input.manager_id && input.manager_id !== principal.id) {
+      throw new Error('MCP authorization denied: manager identity mismatch');
+    }
+    input.manager_id = principal.id;
+    return;
+  }
+
+  if (toolName === 'workflow_submit_draft' || toolName === 'workflow_submit_review' || toolName === 'workflow_recall') {
+    if (input.actor_id && input.actor_id !== principal.id) {
+      throw new Error('MCP authorization denied: actor identity mismatch');
+    }
+    input.actor_id = principal.id;
+  } else if (toolName === 'workflow_human_decide') {
+    if (input.reviewer && input.reviewer !== principal.id) {
+      throw new Error('MCP authorization denied: human identity mismatch');
+    }
+    input.reviewer = principal.id;
+  }
+
+  const taskId = typeof input.task_id === 'string' ? input.task_id.trim() : '';
+  if (taskId) {
+    const run = workflowGateway.get(taskId, principal.tenant_id);
+    if (run && (!allowedBoundary(principal.projects, run.project) || !allowedBoundary(principal.spaces, run.space_id))) {
+      throw new Error('MCP authorization denied: workflow boundary mismatch');
+    }
+  }
+}
+
+export function createMemoryVaultMcpServer(opts: { principal?: McpPrincipal } = {}): McpServer {
 const server = new McpServer(
   {
     name: 'memory-vault',
     version: '0.1.0',
   },
   {
-    instructions: `You are connected to MemoryVault, the user's persistent AI memory system. Your behavior should be SILENT and PROACTIVE — the user should never need to ask you to remember things.
+    instructions: opts.principal ? `You are authenticated to MemoryVault as ${opts.principal.id} with role ${opts.principal.role}.
+Only use the governed workflow tools granted to this role. The server binds tenant, project, space, and actor identity from your authenticated Principal; never attempt to impersonate another Agent or bypass Workflow Gateway.` : `You are connected to MemoryVault, the user's persistent AI memory system. Your behavior should be SILENT and PROACTIVE — the user should never need to ask you to remember things.
 
 CRITICAL RULES (follow silently, never announce these actions to the user):
 
@@ -115,6 +190,34 @@ NEVER say "I've remembered this for you" or "I've saved this to memory". Complet
   }
 );
 
+if (opts.principal) {
+  const rawRegisterTool = server.registerTool.bind(server) as (...args: unknown[]) => unknown;
+  const allowedTools = ROLE_TOOLS[opts.principal.role];
+  (server as unknown as { registerTool: (...args: unknown[]) => unknown }).registerTool = (
+    name: unknown,
+    config: unknown,
+    handler: unknown,
+  ) => {
+    const registered = rawRegisterTool(name, config, async (input: Record<string, unknown>, extra: unknown) => {
+      authorizePrincipalTool(opts.principal!, String(name), input);
+      return (handler as (value: Record<string, unknown>, context: unknown) => unknown)(input, extra);
+    }) as { disable: () => void };
+    if (!allowedTools.has('*') && !allowedTools.has(String(name))) registered.disable();
+    return registered;
+  };
+
+  const disableRegistration = (method: 'registerResource' | 'registerPrompt') => {
+    const raw = server[method].bind(server) as (...args: unknown[]) => unknown;
+    (server as unknown as Record<string, (...args: unknown[]) => unknown>)[method] = (...args: unknown[]) => {
+      const registered = raw(...args) as { disable: () => void };
+      registered.disable();
+      return registered;
+    };
+  };
+  disableRegistration('registerResource');
+  disableRegistration('registerPrompt');
+}
+
 // ─── Tool: memory_write ───
 server.registerTool(
   'memory_write',
@@ -135,6 +238,9 @@ server.registerTool(
       expires_at: z.string().optional().describe('ISO 8601 expiration date, optional'),
       scope: z.string().optional().describe('Memory scope: personal | team. Invalid values default to personal.'),
       space_id: z.string().optional().describe('Required when scope is team.'),
+      sensitivity: z.enum(['normal', 'sensitive', 'restricted']).optional().describe('Sensitivity classification. Sensitive memories require review; restricted memories cannot be shared to team scope.'),
+      review_required: z.boolean().optional().describe('Force this memory into the review queue.'),
+      review_reason: z.string().optional().describe('Why review is required.'),
     }),
   },
   async (input) => {
@@ -238,6 +344,295 @@ server.registerTool(
       content: [{ type: 'text' as const, text: JSON.stringify(memory, null, 2) }],
     };
   }
+);
+
+server.registerTool(
+  'memory_correct',
+  {
+    title: 'Correct Memory',
+    description: 'Correct a specific recalled memory by its versioned memory_ref. Rejects stale references instead of overwriting newer information.',
+    inputSchema: z.object({
+      memory_ref: z.string().describe('Versioned memory reference, for example <id>@2'),
+      content: z.string().describe('Correct replacement content'),
+      reason: z.string().optional().describe('Why the memory is being corrected'),
+    }),
+  },
+  async ({ memory_ref, content, reason }) => {
+    const memory = await store.correct(memory_ref, content, reason);
+    backgroundSync();
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(memory, null, 2) }],
+    };
+  }
+);
+
+server.registerTool(
+  'memory_review_decide',
+  {
+    title: 'Review Memory',
+    description: 'Approve or reject a pending memory and append an immutable governance event.',
+    inputSchema: z.object({
+      id: z.string(),
+      decision: z.enum(['approve', 'reject']),
+      reviewer: z.string(),
+      reason: z.string().optional(),
+      idempotency_key: z.string(),
+    }),
+  },
+  async input => {
+    const memory = store.review(input.id, input.decision, input.reviewer, input.reason);
+    const event = agentEvents.enqueue({
+      idempotency_key: input.idempotency_key,
+      tenant_id: memory.tenant_id,
+      event_type: 'feedback',
+      payload: { memory_ref: memory.memory_ref, decision: input.decision, reviewer: input.reviewer, reason: input.reason },
+      project: memory.project,
+      scope: memory.scope,
+      space_id: memory.space_id,
+      actor_id: input.reviewer,
+    });
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ memory, audit_event_id: event.event.id }, null, 2) }],
+    };
+  }
+);
+
+server.registerTool(
+  'policy_write',
+  {
+    title: 'Create Policy Draft',
+    description: 'Create a draft mandatory policy. Drafts are never injected until explicitly approved.',
+    inputSchema: z.object({
+      project: z.string(),
+      title: z.string(),
+      content: z.string(),
+      tenant_id: z.string().optional(),
+      space_id: z.string().optional(),
+      source: z.string().optional(),
+      tool_boundaries: z.array(z.string()).optional(),
+    }),
+  },
+  async input => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(policies.create(input), null, 2) }],
+  })
+);
+
+server.registerTool(
+  'policy_approve',
+  {
+    title: 'Approve Policy',
+    description: 'Approve an exact policy revision for mandatory injection and validation.',
+    inputSchema: z.object({
+      policy_ref: z.string(),
+      approved_by: z.string(),
+    }),
+  },
+  async ({ policy_ref, approved_by }) => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(policies.approve(policy_ref, approved_by), null, 2) }],
+  })
+);
+
+server.registerTool(
+  'policy_list',
+  {
+    title: 'List Policies',
+    description: 'List project policies, optionally filtered by approval status.',
+    inputSchema: z.object({
+      project: z.string(),
+      tenant_id: z.string().optional(),
+      space_id: z.string().optional(),
+      status: z.enum(['draft', 'approved', 'retired']).optional(),
+    }),
+  },
+  async input => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(policies.list(input), null, 2) }],
+  })
+);
+
+server.registerTool(
+  'agent_event_record',
+  {
+    title: 'Record Agent Event',
+    description: 'Reliably append an immutable Agent execution event and an idempotent extraction job to the SQLite Outbox.',
+    inputSchema: z.object({
+      idempotency_key: z.string(),
+      event_type: z.enum(['task_started', 'task_handoff', 'message', 'tool_call', 'tool_result', 'task_completed', 'task_failed', 'feedback', 'memory_candidate']),
+      payload: z.record(z.unknown()),
+      tenant_id: z.string().optional(),
+      project: z.string().optional(),
+      scope: z.enum(['personal', 'team']).optional(),
+      space_id: z.string().optional(),
+      task_id: z.string().optional(),
+      trace_id: z.string().optional(),
+      actor_id: z.string().optional(),
+    }),
+  },
+  async input => {
+    const queued = agentEvents.enqueue(input);
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify({ event_id: queued.event.id, created: queued.created, outbox_status: queued.outbox.status }, null, 2) }],
+    };
+  }
+);
+
+server.registerTool(
+  'memory_worker_run',
+  {
+    title: 'Run Memory Worker',
+    description: 'Process due memory extraction jobs with retry and dead-letter handling.',
+    inputSchema: z.object({ limit: z.number().min(1).max(100).optional() }),
+  },
+  async ({ limit }) => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(await memoryWorker.processBatch(limit ?? 10), null, 2) }],
+  })
+);
+
+server.registerTool(
+  'memory_recall_context',
+  {
+    title: 'Recall Governed Context',
+    description: 'Build a permission-scoped context package for approved lifecycle triggers.',
+    inputSchema: z.object({
+      project: z.string(),
+      trigger: z.enum(['task_start', 'failure_retry', 'agent_handoff', 'tool_boundary']),
+      tenant_id: z.string().optional(),
+      space_id: z.string().optional(),
+      query: z.string().optional(),
+      limit: z.number().min(1).max(50).optional(),
+      budget: z.number().min(50).max(4000).optional(),
+      source_tool: z.string().optional(),
+    }),
+  },
+  async input => ({
+    content: [{
+      type: 'text' as const,
+      text: await buildRecallContext(store, {
+        project: input.project,
+        tenantId: input.tenant_id,
+        spaceId: input.space_id,
+        trigger: input.trigger,
+        query: input.query,
+        limit: input.limit?.toString(),
+        budget: input.budget?.toString(),
+        sourceTool: input.source_tool ?? 'agent-runtime',
+      }),
+    }],
+  })
+);
+
+server.registerTool(
+  'workflow_start',
+  {
+    title: 'Start Governed Agent Workflow',
+    description: 'Start a managed team workflow with forced task-start and writer-handoff recall.',
+    inputSchema: z.object({
+      task_id: z.string(),
+      request: z.string(),
+      project: z.string(),
+      space_id: z.string(),
+      writer_id: z.string(),
+      tenant_id: z.string().optional(),
+      trace_id: z.string().optional(),
+      manager_id: z.string().optional(),
+    }),
+  },
+  async input => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(await workflowGateway.start(input), null, 2) }],
+  })
+);
+
+server.registerTool(
+  'workflow_submit_draft',
+  {
+    title: 'Submit Workflow Draft',
+    description: 'Submit the assigned writer artifact and force a reviewer handoff with fresh governed context.',
+    inputSchema: z.object({
+      task_id: z.string(),
+      actor_id: z.string(),
+      reviewer_id: z.string(),
+      draft: z.string(),
+      tenant_id: z.string().optional(),
+    }),
+  },
+  async input => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(await workflowGateway.submitDraft(input), null, 2) }],
+  })
+);
+
+server.registerTool(
+  'workflow_recall',
+  {
+    title: 'Recall Managed Workflow Context',
+    description: 'Force governed recall for an active workflow failure retry or an approved Policy tool boundary.',
+    inputSchema: z.object({
+      task_id: z.string(),
+      actor_id: z.string(),
+      trigger: z.enum(['failure_retry', 'tool_boundary']),
+      tenant_id: z.string().optional(),
+      attempt: z.number().int().min(1).optional(),
+      tool_name: z.string().optional(),
+      query: z.string().optional(),
+    }),
+  },
+  async input => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(await workflowGateway.recallForTrigger(input), null, 2) }],
+  })
+);
+
+server.registerTool(
+  'workflow_submit_review',
+  {
+    title: 'Submit Independent Workflow Review',
+    description: 'Record an independent policy review; approval must attest every current required policy_ref.',
+    inputSchema: z.object({
+      task_id: z.string(),
+      actor_id: z.string(),
+      decision: z.enum(['approved', 'rejected']),
+      findings: z.string(),
+      policy_refs: z.array(z.string()),
+      tenant_id: z.string().optional(),
+    }),
+  },
+  async input => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(workflowGateway.submitReview(input), null, 2) }],
+  })
+);
+
+server.registerTool(
+  'workflow_human_decide',
+  {
+    title: 'Human Workflow Decision',
+    description: 'Approve the reviewed artifact or reject and roll it back before publication; optionally persist reusable experience.',
+    inputSchema: z.object({
+      task_id: z.string(),
+      reviewer: z.string(),
+      decision: z.enum(['approve', 'reject']),
+      reason: z.string().optional(),
+      tenant_id: z.string().optional(),
+      experience: z.object({
+        content: z.string(),
+        type: z.enum(['identity', 'preference', 'project', 'episode', 'rule']).optional(),
+        confidence: z.number().min(0).max(1).optional(),
+        sensitivity: z.enum(['normal', 'sensitive', 'restricted']).optional(),
+        tags: z.array(z.string()).optional(),
+      }).optional(),
+    }),
+  },
+  async input => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(await workflowGateway.humanDecide(input), null, 2) }],
+  })
+);
+
+server.registerTool(
+  'workflow_get',
+  {
+    title: 'Get Workflow',
+    description: 'Read the current governed workflow state and its audit references.',
+    inputSchema: z.object({ task_id: z.string(), tenant_id: z.string().optional() }),
+  },
+  async ({ task_id, tenant_id }) => ({
+    content: [{ type: 'text' as const, text: JSON.stringify(workflowGateway.get(task_id, tenant_id), null, 2) }],
+  })
 );
 
 // ─── Tool: memory_export ───
@@ -720,11 +1115,16 @@ ${memoriesList || '\n_No active memories found._'}`,
   }
 );
 
+return server;
+}
+
+const server = createMemoryVaultMcpServer();
+
 // ─── Start ───
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && process.env.MEMORYVAULT_TRANSPORT !== 'http') {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('MemoryVault MCP Server running on stdio');
 }
 
-export { server, store };
+export { server, store, policies, agentEvents, memoryWorker };

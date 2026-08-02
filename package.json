@@ -1,16 +1,21 @@
 {
   "name": "memory-vault",
   "version": "0.1.0",
-  "description": "MCP Memory Server - Your AI memory belongs to you",
+  "description": "Local-first Agent MemoryOps infrastructure for governed cross-agent memory sharing",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/memoryvault/memory-vault"
+    "url": "https://github.com/fusae/Memory-Vault.git"
   },
+  "homepage": "https://github.com/fusae/Memory-Vault#readme",
+  "bugs": "https://github.com/fusae/Memory-Vault/issues",
   "keywords": [
     "mcp",
     "memory",
+    "agent-memory",
+    "agent-infrastructure",
+    "agentteams",
     "ai",
     "llm",
     "model-context-protocol",
@@ -22,19 +27,28 @@
   "files": [
     "build",
     "public",
+    "examples/agentteams-hospital-a",
+    "docs",
+    ".env.example",
     "README.md",
+    "README_CN.md",
     "LICENSE"
   ],
   "bin": {
     "memory-vault": "./build/index.js",
+    "memory-vault-http": "./build/http.js",
+    "memory-vault-worker": "./build/worker.js",
     "memory-vault-cli": "./build/cli.js",
-    "memory-vault-dashboard": "./build/dashboard.js"
+    "memory-vault-dashboard": "./build/dashboard.js",
+    "memory-vault-demo-hospital-a": "./build/hospital-demo.js"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "dashboard": "tsx src/dashboard.ts",
+    "demo:hospital-a": "tsx src/hospital-demo.ts",
     "test": "vitest run",
+    "validate:agentteams": "vitest run tests/agentteams-example.test.ts",
     "test:watch": "vitest"
   },
   "dependencies": {
@@ -53,12 +67,7 @@
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0",
-    "vitest": "^3.0.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "esbuild"
-    ]
+    "vitest": "^3.0.0",
+    "yaml": "^2.9.0"
   }
 }

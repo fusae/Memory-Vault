@@ -2,6 +2,7 @@ import type { MemoryStore } from './memory-store.js';
 import type { MemoryEntry, MemorySearchResult } from './types.js';
 import { recordEvent } from './db.js';
 import { pullDueRemoteSpaces, retryPendingTeamMemoryPushes } from './space-sync.js';
+import { PolicyStore } from './policy-store.js';
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
@@ -36,8 +37,9 @@ type RecallLayer = 'team' | 'project' | 'personal';
 
 function formatMemoryLine(memory: MemoryEntry, layer: RecallLayer): string {
   const source = `${memory.source_tool ?? 'unknown'} ${memory.created_at.slice(0, 10)}`;
-  if (layer === 'team') return `- [团队记忆|来源:${source}] ${memory.content}`;
-  return `- [来源:${source}] ${memory.content}`;
+  const provenance = `来源:${source}|版本:${memory.revision}|置信度:${memory.confidence.toFixed(2)}|memory_ref:${memory.memory_ref}`;
+  if (layer === 'team') return `- [团队记忆|${provenance}] ${memory.content}`;
+  return `- [${provenance}] ${memory.content}`;
 }
 
 function takeLines(memories: MemoryEntry[], layer: RecallLayer, budgetChars: number): { lines: string[]; unused: number; remaining: MemoryEntry[] } {
@@ -110,22 +112,23 @@ function sortBySemanticWithDecay(memories: MemorySearchResult[]): MemorySearchRe
   });
 }
 
-function fallbackRecall(store: MemoryStore, project: string, limit: number): { team: MemoryEntry[]; project: MemoryEntry[]; personal: MemoryEntry[] } {
+function fallbackRecall(store: MemoryStore, project: string, limit: number, tenantId: string, spaceId?: string): { team: MemoryEntry[]; project: MemoryEntry[]; personal: MemoryEntry[] } {
   return {
-    team: store.listJoinedTeamMemories().sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit),
-    project: store.listProjectMemories(project).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit),
-    personal: store.listGlobalPersonalMemories().sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit),
+    team: store.listJoinedTeamMemories(project, tenantId, spaceId).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit),
+    project: store.listProjectMemories(project, tenantId).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit),
+    personal: store.listGlobalPersonalMemories(tenantId).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, limit),
   };
 }
 
 export async function buildRecallContext(
   store: MemoryStore,
-  opts: { project: string; format?: string; limit?: string; budget?: string; query?: string; sourceTool?: string }
+  opts: { project: string; tenantId?: string; spaceId?: string; format?: string; limit?: string; budget?: string; query?: string; sourceTool?: string; trigger?: string }
 ): Promise<string> {
   const startedAt = Date.now();
   const limit = parsePositiveInt(opts.limit, 10);
   const budget = parsePositiveInt(opts.budget, 500);
   const query = opts.query?.trim();
+  const tenantId = opts.tenantId?.trim() || 'local';
 
   let memories: { team: MemoryEntry[]; project: MemoryEntry[]; personal: MemoryEntry[] };
   try {
@@ -139,10 +142,10 @@ export async function buildRecallContext(
 
     if (query) {
       const remainingMs = Math.max(1, 2000 - (Date.now() - startedAt));
-      const results = await withTimeout(store.search({ query, limit: Math.max(limit * 8, limit) }), remainingMs);
+      const results = await withTimeout(store.search({ query, tenant_id: tenantId, limit: Math.max(limit * 8, limit) }), remainingMs);
       if (results.some(r => r.distance < 0)) throw new Error('embedding unavailable');
       const sorted = sortBySemanticWithDecay(results);
-      const joinedTeamIds = new Set(store.listJoinedTeamMemories().map(m => m.id));
+      const joinedTeamIds = new Set(store.listJoinedTeamMemories(opts.project, tenantId, opts.spaceId).map(m => m.id));
       memories = {
         team: sorted.filter(m => joinedTeamIds.has(m.id)).slice(0, limit),
         project: sorted.filter(m => m.scope === 'personal' && m.project === opts.project).slice(0, limit),
@@ -150,23 +153,37 @@ export async function buildRecallContext(
       };
     } else {
       memories = {
-        team: sortByImportanceWithDecay(store.listJoinedTeamMemories()).slice(0, limit),
-        project: sortByImportanceWithDecay(store.listProjectMemories(opts.project)).slice(0, limit),
-        personal: sortByImportanceWithDecay(store.listGlobalPersonalMemories()).slice(0, limit),
+        team: sortByImportanceWithDecay(store.listJoinedTeamMemories(opts.project, tenantId, opts.spaceId)).slice(0, limit),
+        project: sortByImportanceWithDecay(store.listProjectMemories(opts.project, tenantId)).slice(0, limit),
+        personal: sortByImportanceWithDecay(store.listGlobalPersonalMemories(tenantId)).slice(0, limit),
       };
     }
   } catch {
-    memories = fallbackRecall(store, opts.project, limit);
+    memories = fallbackRecall(store, opts.project, limit, tenantId, opts.spaceId);
   }
 
-  const output = opts.format === undefined || opts.format === 'context'
-    ? formatRecallContext(memories, budget)
-    : '';
+  let output = '';
+  if (opts.format === undefined || opts.format === 'context') {
+    const policies = new PolicyStore();
+    const approved = [
+      ...policies.list({ tenant_id: tenantId, project: opts.project, status: 'approved' }),
+      ...(opts.spaceId ? policies.list({ tenant_id: tenantId, project: opts.project, space_id: opts.spaceId, status: 'approved' }) : []),
+    ];
+    const uniquePolicies = [...new Map(approved.map(policy => [policy.id, policy])).values()];
+    const policyContext = uniquePolicies.length > 0
+      ? ['## 强制规则(已审批)', ...uniquePolicies.map(policy => `- [policy_ref:${policy.policy_ref}] ${policy.title}: ${policy.content}`)].join('\n')
+      : '';
+    const remainingBudget = Math.max(0, budget - Math.ceil(policyContext.length / 4));
+    const memoryContext = formatRecallContext(memories, remainingBudget);
+    output = [policyContext, memoryContext].filter(Boolean).join('\n\n');
+  }
+  const recalledRefs = [...output.matchAll(/memory_ref:([^\]|]+)/g)].map(match => match[1]);
+  store.markRecalled(recalledRefs);
   recordEvent({
     event_type: 'recall',
     project_key: opts.project,
     source_tool: opts.sourceTool ?? 'memory-vault',
-    detail: query ? `query: ${query}` : `memories: ${memories.team.length + memories.project.length + memories.personal.length}`,
+    detail: `${opts.trigger ? `trigger: ${opts.trigger}; ` : ''}${query ? `query: ${query}` : `memories: ${memories.team.length + memories.project.length + memories.personal.length}`}`,
   });
   return output;
 }

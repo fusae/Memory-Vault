@@ -1,5 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import readline from 'node:readline';
 import { CryptoService } from './crypto.js';
 import { MemoryStore } from './memory-store.js';
@@ -13,6 +14,11 @@ import { buildRecallContext } from './recall.js';
 import { registerProject, syncAgentsMd } from './agents-md.js';
 import { retryPendingTeamMemoryPushes } from './space-sync.js';
 import { startSpaceServer } from './space-server.js';
+import { SpaceKeyService, type SpaceInvitation } from './space-crypto.js';
+import fs from 'node:fs';
+import { issueSpaceAccessToken, revokeMemberAccess } from './space-access.js';
+import type { SpaceAccessRole } from './types.js';
+import { hashBearerToken, loadPrincipalCredentials, type McpPrincipalCredential, type McpPrincipalRole } from './mcp-principal.js';
 
 const DB_PATH = getMemoryDbPath();
 export const EXTRACT_MAX_CHARS = 50000;
@@ -22,7 +28,8 @@ function getStore(): MemoryStore {
   if (!_store) {
     const passphrase = process.env.MEMORYVAULT_PASSPHRASE?.trim();
     const crypto = passphrase ? new CryptoService(passphrase) : undefined;
-    _store = new MemoryStore(DB_PATH, crypto);
+    const identity = SpaceKeyService.loadIdentity();
+    _store = new MemoryStore(DB_PATH, crypto, identity ? new SpaceKeyService(identity) : undefined);
   }
   return _store;
 }
@@ -87,6 +94,136 @@ export function listSpaces() {
     console.log('');
   }
   console.log(`Total: ${spaces.length} spaces`);
+}
+
+function requireSpaceKeys(): SpaceKeyService {
+  getStore();
+  const identity = SpaceKeyService.loadIdentity();
+  if (!identity) throw new Error('Space identity is not initialized. Run: memory-vault-cli space identity-init <member_id>');
+  return new SpaceKeyService(identity);
+}
+
+export function initSpaceIdentity(memberId: string) {
+  const destination = SpaceKeyService.identityPath();
+  if (fs.existsSync(destination)) throw new Error(`Space identity already exists: ${destination}`);
+  const identity = SpaceKeyService.generateIdentity(memberId);
+  SpaceKeyService.saveIdentity(identity);
+  console.log(JSON.stringify({
+    member_id: identity.member_id,
+    encryption_public_key: identity.encryption_public_key,
+    signing_public_key: identity.signing_public_key,
+  }, null, 2));
+}
+
+export function exportSpaceIdentity(opts: { output?: string }) {
+  const identity = requireSpaceKeys().identity;
+  const publicIdentity = {
+    member_id: identity.member_id,
+    encryption_public_key: identity.encryption_public_key,
+    signing_public_key: identity.signing_public_key,
+  };
+  const output = JSON.stringify(publicIdentity, null, 2);
+  if (opts.output) {
+    fs.writeFileSync(opts.output, output, { mode: 0o600 });
+    console.log(opts.output);
+  } else {
+    console.log(output);
+  }
+}
+
+export function initEncryptedSpace(spaceId: string, opts: { name?: string }) {
+  const version = requireSpaceKeys().createSpace(spaceId, opts.name);
+  console.log(`Encrypted space initialized: ${spaceId}@${version}`);
+}
+
+export function inviteSpaceMember(spaceId: string, publicIdentityFile: string, opts: { output?: string }) {
+  const member = JSON.parse(fs.readFileSync(publicIdentityFile, 'utf8')) as {
+    member_id: string;
+    encryption_public_key: string;
+    signing_public_key: string;
+  };
+  const invitation = requireSpaceKeys().addMember(spaceId, member);
+  const output = JSON.stringify(invitation, null, 2);
+  if (opts.output) {
+    fs.writeFileSync(opts.output, output, { mode: 0o600 });
+    console.log(opts.output);
+  } else {
+    console.log(output);
+  }
+}
+
+export function acceptSpaceInvitation(invitationFile: string) {
+  const invitation = JSON.parse(fs.readFileSync(invitationFile, 'utf8')) as SpaceInvitation;
+  requireSpaceKeys().acceptInvitation(invitation);
+  console.log(`Encrypted space joined: ${invitation.space_id}@${invitation.key_version}`);
+}
+
+export function rotateSpaceKey(spaceId: string) {
+  console.log(`Space key rotated: ${spaceId}@${requireSpaceKeys().rotate(spaceId)}`);
+}
+
+export function revokeSpaceMember(spaceId: string, memberId: string) {
+  const version = requireSpaceKeys().revokeMember(spaceId, memberId);
+  revokeMemberAccess(spaceId, memberId);
+  console.log(`Member revoked; access disabled; space key rotated: ${spaceId}@${version}`);
+}
+
+export function issueMemberToken(spaceId: string, memberId: string, opts: { role?: string }) {
+  const keys = requireSpaceKeys();
+  const role = (opts.role ?? 'writer') as SpaceAccessRole;
+  if (!['reader', 'writer', 'owner'].includes(role)) throw new Error('role must be reader, writer, or owner');
+  console.log(issueSpaceAccessToken({
+    space_id: spaceId,
+    member_id: memberId,
+    role,
+    issuer_id: keys.identity.member_id,
+  }));
+}
+
+export function addHttpPrincipal(opts: {
+  file?: string;
+  id?: string;
+  role?: string;
+  tenant?: string;
+  projects?: string;
+  spaces?: string;
+  tokenEnv?: string;
+}): { file: string; token?: string; principal: McpPrincipalCredential } {
+  const roles: McpPrincipalRole[] = ['admin', 'manager', 'writer', 'reviewer', 'human', 'observer'];
+  const role = opts.role as McpPrincipalRole;
+  const id = opts.id?.trim() || '';
+  const tenantId = opts.tenant?.trim() || '';
+  const projects = opts.projects?.split(',').map(value => value.trim()).filter(Boolean) ?? [];
+  const spaces = opts.spaces?.split(',').map(value => value.trim()).filter(Boolean) ?? [];
+  if (!id || !tenantId || !roles.includes(role) || projects.length === 0 || spaces.length === 0) {
+    throw new Error('id, valid role, tenant, projects, and spaces are required');
+  }
+
+  const file = path.resolve((opts.file ?? path.join(os.homedir(), '.memoryvault', 'http-principals.json')).replace(/^~(?=$|\/)/, os.homedir()));
+  const existing = fs.existsSync(file) ? loadPrincipalCredentials(file) : [];
+  if (existing.some(item => item.id === id)) throw new Error(`Principal already exists: ${id}`);
+  const suppliedToken = opts.tokenEnv ? process.env[opts.tokenEnv]?.trim() : undefined;
+  if (opts.tokenEnv && !suppliedToken) throw new Error(`Token environment variable is empty: ${opts.tokenEnv}`);
+  const generatedToken = suppliedToken ? undefined : randomBytes(32).toString('base64url');
+  const token = suppliedToken ?? generatedToken!;
+  const principal: McpPrincipalCredential = {
+    token_sha256: hashBearerToken(token),
+    id,
+    role,
+    tenant_id: tenantId,
+    projects: [...new Set(projects)],
+    spaces: [...new Set(spaces)],
+  };
+
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify({ principals: [...existing, principal] }, null, 2) + '\n', { mode: 0o600 });
+  fs.renameSync(temp, file);
+  fs.chmodSync(file, 0o600);
+  console.log(`Principal added: ${id} (${role})`);
+  console.log(`Principal file: ${file}`);
+  if (generatedToken) console.log(`Bearer token (shown once): ${generatedToken}`);
+  return { file, token: generatedToken, principal };
 }
 
 export async function searchMemories(query: string, opts: { type?: string; project?: string; limit?: string }) {
@@ -198,6 +335,12 @@ export function deleteMemory(id: string) {
   }
   store.delete(id);
   console.log(`✓ Memory deleted: ${id}`);
+}
+
+export async function correctMemory(memoryRef: string, content: string, opts: { reason?: string }) {
+  const memory = await getStore().correct(memoryRef, content, opts.reason);
+  console.log(`✓ Memory corrected: ${memory.memory_ref}`);
+  console.log(`  Content: ${memory.content}`);
 }
 
 export function exportMemories(opts: { format?: string }) {

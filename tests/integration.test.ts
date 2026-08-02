@@ -7,5 +7,11 @@ describe('MCP Server tools', () => {
     // 验证模块可以正常加载（不启动 stdio）
     const mod = await import('../src/index.js');
     expect(mod).toBeDefined();
+    expect('memory_correct' in (mod.server as any)._registeredTools).toBe(true);
+    expect('memory_review_decide' in (mod.server as any)._registeredTools).toBe(true);
+    expect('policy_write' in (mod.server as any)._registeredTools).toBe(true);
+    expect('policy_approve' in (mod.server as any)._registeredTools).toBe(true);
+    expect('policy_list' in (mod.server as any)._registeredTools).toBe(true);
+    expect('workflow_recall' in (mod.server as any)._registeredTools).toBe(true);
   });
 });

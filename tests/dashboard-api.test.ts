@@ -4,6 +4,10 @@ import { MemoryStore } from '../src/memory-store.js';
 import { dashboardApi } from '../src/dashboard-api.js';
 import { closeDatabase } from '../src/db.js';
 import fs from 'node:fs';
+import { AgentEventStore } from '../src/event-store.js';
+import { MemoryWorker } from '../src/memory-worker.js';
+import { PolicyStore } from '../src/policy-store.js';
+import { WorkflowGateway } from '../src/workflow-gateway.js';
 
 vi.mock('../src/embedding.js', () => ({
   getEmbedding: vi.fn().mockImplementation(async (text: string) => {
@@ -130,5 +134,105 @@ describe('Dashboard API', () => {
     const data = await res.json();
     expect(data).toHaveLength(1);
     expect(data[0].content).toBe('v1');
+  });
+
+  it('exposes reliable operations, outbox, and trace events', async () => {
+    const events = new AgentEventStore();
+    events.enqueue({
+      idempotency_key: 'dashboard-task:start',
+      event_type: 'task_started',
+      payload: { authorization: 'Bearer dashboard-secret' },
+      project: 'hospital-a',
+      task_id: 'dashboard-task',
+      trace_id: 'dashboard-trace',
+      actor_id: 'hospital-a-lead',
+    });
+    await new MemoryWorker(events, store).processBatch();
+
+    const operations = await app.request('/api/operations').then(res => res.json());
+    expect(operations).toMatchObject({ agent_events: 1, redactions: 1 });
+    expect(operations.outbox.completed).toBe(1);
+
+    const trace = await app.request('/api/agent-events?trace_id=dashboard-trace').then(res => res.json());
+    expect(trace).toHaveLength(1);
+    expect(trace[0]).toMatchObject({ task_id: 'dashboard-task', actor_id: 'hospital-a-lead', redaction_count: 1 });
+    expect(JSON.stringify(trace[0].payload)).not.toContain('dashboard-secret');
+
+    const outbox = await app.request('/api/outbox?status=completed').then(res => res.json());
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0]).toMatchObject({ event_type: 'task_started', trace_id: 'dashboard-trace' });
+  });
+
+  it('lists policies and supports human review decisions', async () => {
+    const policies = new PolicyStore();
+    const policy = policies.create({ project: 'hospital-a', title: 'Medical claims', content: 'No absolute efficacy claims.' });
+    policies.approve(policy.policy_ref, 'compliance-owner');
+    const pending = await store.write({
+      content: 'Hospital A private workflow',
+      type: 'preference',
+      project: 'hospital-a',
+      sensitivity: 'sensitive',
+    });
+
+    const policyRows = await app.request('/api/policies?project=hospital-a&status=approved').then(res => res.json());
+    expect(policyRows).toHaveLength(1);
+    expect(policyRows[0].policy_ref).toContain('@2');
+
+    const response = await app.request(`/api/memories/${pending.memory.id}/review`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision: 'approve', reviewer: 'client-owner', reason: 'confirmed' }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ status: 'active', reviewed_by: 'client-owner' });
+  });
+
+  it('lists workflows awaiting human approval and publishes through the governed decision endpoint', async () => {
+    store.joinSpace('hospital-a-copy', 'Hospital A Copy');
+    const policies = new PolicyStore();
+    const draftPolicy = policies.create({
+      project: 'hospital-a',
+      space_id: 'hospital-a-copy',
+      title: 'Medical claims',
+      content: 'No absolute efficacy claims.',
+    });
+    const policyRef = policies.approve(draftPolicy.policy_ref, 'compliance-owner').policy_ref;
+    const events = new AgentEventStore();
+    const worker = new MemoryWorker(events, store);
+    const gateway = new WorkflowGateway(events, store, policies, worker);
+    await gateway.start({
+      task_id: 'dashboard-workflow',
+      project: 'hospital-a',
+      space_id: 'hospital-a-copy',
+      request: 'Write a clinic announcement.',
+      writer_id: 'writer',
+    });
+    await gateway.submitDraft({
+      task_id: 'dashboard-workflow',
+      actor_id: 'writer',
+      reviewer_id: 'reviewer',
+      draft: 'Hospital A clinic announcement.',
+    });
+    gateway.submitReview({
+      task_id: 'dashboard-workflow',
+      actor_id: 'reviewer',
+      decision: 'approved',
+      findings: 'Policy satisfied.',
+      policy_refs: [policyRef],
+    });
+
+    const pending = await app.request('/api/workflows?status=awaiting_human_approval').then(res => res.json());
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ task_id: 'dashboard-workflow', status: 'awaiting_human_approval' });
+
+    const response = await app.request('/api/workflows/dashboard-workflow/decision', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reviewer: 'hospital-owner', decision: 'approve', reason: 'approved for publishing' }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).run).toMatchObject({ status: 'completed', human_reviewer: 'hospital-owner' });
+    const operations = await app.request('/api/operations').then(res => res.json());
+    expect(operations.pending_workflow_approval).toBe(0);
   });
 });

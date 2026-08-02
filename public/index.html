@@ -12,6 +12,7 @@
     <nav>
       <button class="tab active" data-view="timeline">Timeline</button>
       <button class="tab" data-view="events">记忆流</button>
+      <button class="tab" data-view="operations">Operations</button>
       <button class="tab" data-view="health">Health</button>
     </nav>
     <div class="header-actions">
@@ -51,6 +52,33 @@
         <span id="event-count" class="count">0 events</span>
       </div>
       <div id="event-list" class="event-list"></div>
+    </section>
+
+    <section id="view-operations" class="view">
+      <div class="filters">
+        <input id="filter-trace" type="text" placeholder="trace_id filter...">
+        <button id="btn-operations-refresh" class="btn btn-sm">Refresh</button>
+        <span id="operations-updated" class="count"></span>
+      </div>
+      <div id="operations-summary" class="health-grid"></div>
+      <div class="operations-grid">
+        <section class="operations-panel">
+          <h2>Workflow Approval</h2>
+          <div id="workflow-review-list" class="operations-list"></div>
+        </section>
+        <section class="operations-panel">
+          <h2>Memory Review</h2>
+          <div id="review-list" class="operations-list"></div>
+        </section>
+        <section class="operations-panel">
+          <h2>Outbox</h2>
+          <div id="outbox-list" class="operations-list"></div>
+        </section>
+      </div>
+      <section class="operations-panel trace-panel">
+        <h2>Agent Trace</h2>
+        <div id="agent-event-list" class="operations-list"></div>
+      </section>
     </section>
 
     <!-- Health View -->

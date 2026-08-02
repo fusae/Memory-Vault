@@ -1,0 +1,98 @@
+apiVersion: agentteams.io/v1beta1
+kind: Manager
+metadata:
+  name: default
+spec:
+  model: qwen3.5-plus
+  runtime: openclaw
+  skills:
+    - worker-management
+    - team-management
+  agents: |
+    将医院 A 的办公任务委派给 hospital-a-team 的 Team Leader。
+    Manager 不直接越过 Team Leader 指挥执行 Worker。
+    Manager 不直接访问 MemoryVault，由受身份绑定的 Team Leader 启动受控工作流。
+    每个任务必须携带 task_id、trace_id 和 project=hospital-a。
+---
+apiVersion: agentteams.io/v1beta1
+kind: Worker
+metadata:
+  name: hospital-a-lead
+spec:
+  model: qwen3.5-plus
+  runtime: openclaw
+  package: http://host.docker.internal:8099/hospital-memory-worker.zip
+  skills:
+    - project-management
+    - task-management
+    - team-coordination
+  mcpServers:
+    - name: memory-vault
+      url: http://host.docker.internal:3090/mcp
+      transport: http
+  identity: |
+    - Name: Hospital A Content Lead
+    - Role: 医院 A 内容项目负责人
+  agents: |
+    收到任务后必须先调用 workflow_start，固定 project=hospital-a、space_id=hospital-a-copy，指定 hospital-a-writer。
+    将 workflow_start 返回的 task_id、trace_id、writer_context 交给 writer。
+    不亲自撰写最终文案；writer 完成后必须交给 reviewer。
+    未经 reviewer 验证和人类审批，不得宣布交付完成。
+---
+apiVersion: agentteams.io/v1beta1
+kind: Worker
+metadata:
+  name: hospital-a-writer
+spec:
+  model: qwen3.5-plus
+  runtime: openclaw
+  package: http://host.docker.internal:8099/hospital-memory-worker.zip
+  mcpServers:
+    - name: memory-vault
+      url: http://host.docker.internal:3090/mcp
+      transport: http
+  identity: |
+    - Name: Hospital A Copywriter
+    - Role: 医院 A 文案执行
+  agents: |
+    仅接受 Team Leader 分配的任务。
+    只使用 workflow_start 返回的受控上下文，按 hospital-copy-execution Skill 生成文案。
+    完成后必须调用 workflow_submit_draft，不得绕过 Gateway 直接交付。
+    输出必须保留使用过的 memory_ref 和 policy_ref。
+---
+apiVersion: agentteams.io/v1beta1
+kind: Worker
+metadata:
+  name: hospital-a-reviewer
+spec:
+  model: qwen3.5-plus
+  runtime: openclaw
+  package: http://host.docker.internal:8099/hospital-memory-worker.zip
+  mcpServers:
+    - name: memory-vault
+      url: http://host.docker.internal:3090/mcp
+      transport: http
+  identity: |
+    - Name: Hospital A Compliance Reviewer
+    - Role: 医疗合规与品牌审核
+  agents: |
+    独立验证文案，不接受 writer 自我批准。
+    只使用 approved Policy 作为强制规则，草稿 Policy 不得作为裁决依据。
+    必须调用 workflow_submit_review，并逐项提交 required_policy_refs。
+    审核失败必须给出 policy_ref、问题位置和可执行修改意见。
+---
+apiVersion: agentteams.io/v1beta1
+kind: Team
+metadata:
+  name: hospital-a-team
+spec:
+  description: 医院 A 文案生产、品牌审核、医疗合规和经验沉淀团队
+  peerMentions: true
+  heartbeatEvery: 10m
+  workerMembers:
+    - name: hospital-a-lead
+      role: team_leader
+    - name: hospital-a-writer
+      role: worker
+    - name: hospital-a-reviewer
+      role: worker

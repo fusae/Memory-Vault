@@ -1,348 +1,242 @@
 # MemoryVault
 
-> MCP Memory Server — your AI memory belongs to you, not the platform.
+> Local-first Agent MemoryOps infrastructure for reliable memory sharing across agents, people, projects, and devices.
 
-MemoryVault is a local-first MCP (Model Context Protocol) memory server that gives AI tools persistent, searchable memory. It stores memories in SQLite, uses `sqlite-vec` + Ollama for semantic retrieval, supports optional AES-256-GCM encryption, and can sync encrypted data through Supabase.
+[中文文档](README_CN.md)
 
-## What It Does
+MemoryVault is more than an MCP memory server. It adds a governed execution layer around shared agent memory: durable event capture, an SQLite Outbox, extraction workers, scoped recall, approved policies, versioned references, human review, audit traces, and per-space E2EE.
 
-- Local semantic memory with `SQLite + sqlite-vec + Ollama (nomic-embed-text)`
-- MCP server with proactive memory instructions for connected clients
-- Optional end-to-end encryption via `MEMORYVAULT_PASSPHRASE`
-- Optional cloud sync via Supabase Magic Link auth
-- Claude Code `SessionEnd` hook for automatic extraction after a chat ends
-- Built-in dashboard on `http://localhost:3080`
-- CLI commands for add/search/list/export/review/cleanup/sync
+The reference scenario is an agency team serving Hospital A. When the usual copywriter is absent, another employee's agent can retrieve the permitted Hospital A rules and preferences, produce a draft, pass an independent policy review, wait for human approval, and write reusable experience back to the shared vault.
+
+## Why It Exists
+
+An MCP connection alone does not guarantee that a model will call memory tools. MemoryVault therefore supports two runtime modes:
+
+| Runtime | Guarantee |
+|---|---|
+| Generic MCP clients such as Codex, Claude Code, and Kimi | Compatible, but proactive recall and write behavior remains best-effort unless the client provides hooks |
+| Managed Workflow Gateway and AgentTeams | Enforces lifecycle order, scoped recall, role separation, policy attestation, human approval, audit, and idempotent writeback |
+
+## Architecture
+
+```mermaid
+flowchart LR
+  A[Manager Agent] --> G[Workflow Gateway]
+  G --> R[Scoped Recall]
+  R --> W[Execution Agent]
+  W --> V[Reviewer Agent]
+  V --> H[Human Approval or Rollback]
+  H --> O[SQLite Outbox]
+  O --> M[Memory Worker]
+  M --> D[(Durable Memory)]
+  P[(Approved Policy)] --> R
+  D --> R
+  E[Immutable Agent Events] --> X[Audit Dashboard]
+  G --> E
+  W --> E
+  V --> E
+  H --> E
+```
+
+The data boundary is `tenant_id + project + scope + space_id`. Every recalled memory carries `memory_ref=<id>@<revision>`; every mandatory rule carries `policy_ref=<id>@<revision>`.
+
+## Implemented Capabilities
+
+- SQLite + `sqlite-vec` semantic memory with Ollama `nomic-embed-text`
+- Immutable `agent_events`, idempotency keys, SQLite Outbox, retry, stale lease recovery, and dead letters
+- Memory Worker with classification, secret redaction, sensitivity levels, confidence routing, and human review
+- Tenant, project, personal/team scope, and exact team-space isolation
+- Versioned memory correction, conflict detection, deduplication, tombstones, incremental cursors, and retryable sync
+- Draft/approved/retired Policy store; only exact approved revisions enter governed context
+- Managed workflow state machine: start, writer artifact, independent review, human publish or rollback, experience writeback
+- Per-space AES-256-GCM data keys, X25519 member envelopes, Ed25519 signatures, key rotation, member revocation, and member-scoped RBAC tokens
+- Streamable HTTP and stdio MCP transports
+- Operations Dashboard for traces, Outbox, dead letters, pending memories, policies, and workflow approvals
+- Claude Code SessionEnd extraction, Codex session sweep, CLI import/export, and optional Supabase personal sync
+- AgentTeams Manager, Team Leader, Writer, Reviewer, and four packaged Skills
 
 ## Quick Start
 
+Prerequisites: Node.js `>=18`, `pnpm`, and Ollama.
+
 ```bash
 git clone https://github.com/fusae/Memory-Vault.git
 cd Memory-Vault
-bash scripts/setup.sh
-```
-
-The setup script will:
-
-- check Node.js and Ollama
-- install dependencies and build
-- register CLI commands globally
-- offer to connect Claude Code and Codex CLI
-- optionally enable encryption
-- optionally configure Supabase sync
-
-## Manual Setup
-
-### 1. Prerequisites
-
-- Node.js `>= 18`
-- `pnpm`
-- Ollama running locally
-
-Pull the embedding model:
-
-```bash
 ollama pull nomic-embed-text
-```
-
-### 2. Install and Build
-
-```bash
-git clone https://github.com/fusae/Memory-Vault.git
-cd Memory-Vault
 pnpm install
 pnpm build
 pnpm link --global
 ```
 
-After `pnpm link --global`, these commands are available globally:
-
-- `memory-vault` — MCP server entry
-- `memory-vault-cli` — CLI
-- `memory-vault-dashboard` — dashboard
-
-If `pnpm link --global` fails with `ERR_PNPM_NO_GLOBAL_BIN_DIR`, set `PNPM_HOME` first:
+Or use the interactive installer:
 
 ```bash
-export PNPM_HOME="$HOME/.local/share/pnpm"
-mkdir -p "$PNPM_HOME"
-export PATH="$PNPM_HOME:$PATH"
-pnpm link --global
+bash scripts/setup.sh
 ```
 
-To make it persistent:
+Available binaries:
+
+- `memory-vault`: stdio MCP server
+- `memory-vault-http`: Streamable HTTP MCP server
+- `memory-vault-worker`: supervised Outbox consumer
+- `memory-vault-cli`: administration CLI
+- `memory-vault-dashboard`: audit and approval UI
+- `memory-vault-demo-hospital-a`: deterministic end-to-end demo
+
+## Hospital A Demo
+
+Run the complete local workflow without an external LLM:
 
 ```bash
-echo 'export PNPM_HOME="$HOME/.local/share/pnpm"' >> ~/.bashrc
-echo 'export PATH="$PNPM_HOME:$PATH"' >> ~/.bashrc
+MEMORY_DB_PATH=/tmp/memory-vault-hospital-a.db pnpm demo:hospital-a
 ```
 
-### 3. Environment
+The JSON evidence includes `task_id`, `trace_id`, `memory_ref`, `policy_ref`, artifact revision, review result, human approver, Outbox status, event count, and a database plaintext check.
 
-```bash
-cp .env.example .env
-```
-
-Important variables:
-
-- `MEMORY_DB_PATH` — defaults to `~/.memoryvault/memory.db`
-- `OLLAMA_BASE_URL` — defaults to `http://localhost:11434`
-- `MEMORYVAULT_PASSPHRASE` — optional, enables E2EE
-- `SUPABASE_URL` / `SUPABASE_ANON_KEY` — optional, for sync
-- `DASHBOARD_PORT` — optional, defaults to `3080`
-
-## Encryption
-
-Initialize encryption:
-
-```bash
-memory-vault-cli init-encryption
-```
-
-This generates or asks for a passphrase, then encrypts existing memories. Set the passphrase in your shell environment before running the MCP server or dashboard.
-
-## Cloud Sync
-
-### 1. Create a Supabase project
-
-Create a project at [supabase.com](https://supabase.com), then copy:
-
-- Project URL
-- anon public key
-
-### 2. Run the schema
-
-Open Supabase SQL Editor and run:
-
-`scripts/setup-supabase.sql`
-
-### 3. Configure Magic Link email template
-
-In Supabase Dashboard:
-
-`Authentication -> Email Templates -> Magic Link`
-
-Set the email body to:
-
-```text
-Your MemoryVault verification code is: {{ .Token }}
-```
-
-### 4. Save config and log in
-
-```bash
-memory-vault-cli setup
-memory-vault-cli auth login
-```
-
-Useful sync commands:
-
-```bash
-memory-vault-cli auth status
-memory-vault-cli sync --status
-memory-vault-cli sync
-memory-vault-cli sync --push
-memory-vault-cli sync --pull
-```
-
-When the MCP server is running and auth is valid, writes also try to auto-push in the background.
+The deployable AgentTeams example is in [`examples/agentteams-hospital-a`](examples/agentteams-hospital-a/README.md).
+The verified real-model run is documented in [`docs/agentteams-real-run.md`](docs/agentteams-real-run.md).
+The competition deck is [`docs/MemoryVault-GOAI-Agent-Infra.pptx`](docs/MemoryVault-GOAI-Agent-Infra.pptx), with a presenter script in [`docs/demo-script.md`](docs/demo-script.md).
 
 ## MCP Integration
 
-MemoryVault is a local `stdio` MCP server:
+### Stdio
+
+Claude Code:
 
 ```bash
-node /path/to/memory-vault/build/index.js
-```
-
-### Claude Code
-
-```bash
-claude mcp add memory-vault node /path/to/memory-vault/build/index.js
+claude mcp add memory-vault node /absolute/path/to/Memory-Vault/build/index.js
 claude mcp list
 ```
 
-### Codex CLI
+Codex CLI:
 
 ```bash
-codex mcp add memory-vault -- node /path/to/memory-vault/build/index.js
+codex mcp add memory-vault -- node /absolute/path/to/Memory-Vault/build/index.js
 codex mcp list
 ```
 
-### Generic MCP Client
-
-Use a `stdio` server with:
-
-- command: `node`
-- args: `/path/to/memory-vault/build/index.js`
-
-### Claude Desktop
-
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+Generic MCP configuration:
 
 ```json
 {
-  "mcpServers": {
-    "memory-vault": {
-      "command": "node",
-      "args": ["/path/to/memory-vault/build/index.js"],
-      "env": {
-        "MEMORYVAULT_PASSPHRASE": "your-passphrase-if-needed"
-      }
-    }
-  }
+  "command": "node",
+  "args": ["/absolute/path/to/Memory-Vault/build/index.js"]
 }
 ```
 
-## Claude SessionEnd Hook
+### Streamable HTTP
 
-MemoryVault ships with:
+For shared runtimes, create one hash-only Principal per Agent. The generated bearer token is shown once; `--token-env` hashes an existing runtime token without printing or storing it.
 
-`scripts/session-end-hook.sh`
+```bash
+memory-vault-cli http-principal add \
+  --id hospital-a-lead --role manager --tenant agency \
+  --projects hospital-a --spaces hospital-a-copy
 
-This hook:
-
-- skips very short sessions
-- runs `memory-vault-cli organize --auto`
-- generates an extraction prompt from the transcript
-- calls `claude -p` in the background to write memories through MCP
-
-Example Claude Code hook config:
-
-```json
-{
-  "hooks": {
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/path/to/memory-vault/scripts/session-end-hook.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
+MEMORYVAULT_HTTP_HOST=127.0.0.1 \
+MEMORYVAULT_HTTP_PORT=3090 \
+MEMORYVAULT_HTTP_PRINCIPALS_FILE=~/.memoryvault/http-principals.json \
+memory-vault-http
 ```
 
-If your local Claude setup does not use `~/.claude/mcp.json`, update the `--mcp-config` path inside `scripts/session-end-hook.sh`.
+Endpoint: `http://127.0.0.1:3090/mcp`.
+
+The Principal file is mode `0600`, contains SHA-256 token hashes only, and binds each call to an Agent role, tenant, project, space, and actor identity. `MEMORYVAULT_HTTP_TOKEN` remains available only for legacy single-user clients. Unauthenticated non-loopback HTTP is refused unless `MEMORYVAULT_HTTP_ALLOW_INSECURE=1` is explicitly enabled for a local demo.
+
+## Governed MCP Tools
+
+MemoryVault currently exposes 25 tools, grouped as follows:
+
+- Memory: `memory_write`, `memory_search`, `memory_list`, `memory_update`, `memory_correct`, `memory_review_decide`, `memory_forget`, `memory_delete`, `memory_consolidate`, `memory_versions`, `memory_export`, `memory_export_markdown`, `memory_dream`
+- Policy: `policy_write`, `policy_approve`, `policy_list`
+- Reliable events: `agent_event_record`, `memory_worker_run`, `memory_recall_context`
+- Production Outbox consumer: run `memory-vault-worker` as a supervised service; tune it with `MEMORYVAULT_WORKER_BATCH_SIZE` and `MEMORYVAULT_WORKER_POLL_MS`.
+- Managed workflow: `workflow_start`, `workflow_recall`, `workflow_submit_draft`, `workflow_submit_review`, `workflow_human_decide`, `workflow_get`
+
+Allowed recall triggers are `task_start`, `failure_retry`, `agent_handoff`, and `tool_boundary`. Managed workflows always pass an exact `space_id`; `workflow_recall` enforces retry attempts, active-role ownership, and approved Policy tool boundaries.
+
+## Team Space E2EE
+
+Each device creates a local X25519 and Ed25519 identity. Private keys remain in `~/.memoryvault/space-identity.json` with mode `0600`.
+
+Owner:
+
+```bash
+memory-vault-cli space identity-init alice
+memory-vault-cli space init-encrypted hospital-a-copy --name "Hospital A Copy"
+```
+
+New member:
+
+```bash
+memory-vault-cli space identity-init bob
+memory-vault-cli space identity-export --output bob-public.json
+```
+
+Owner creates a signed invitation and member-scoped remote token:
+
+```bash
+memory-vault-cli space invite hospital-a-copy bob-public.json --output bob-invitation.json
+memory-vault-cli space issue-token hospital-a-copy bob --role writer
+```
+
+Member accepts the invitation, then joins the remote server with the issued token:
+
+```bash
+memory-vault-cli space accept bob-invitation.json
+memory-vault-cli space join hospital-a-copy --name "Hospital A Copy" --url http://server:3100 --token 'mvs_...'
+```
+
+Rotate or revoke:
+
+```bash
+memory-vault-cli space rotate hospital-a-copy
+memory-vault-cli space revoke hospital-a-copy bob
+```
+
+Revocation disables Bob's tokens and immediately rotates the data key. The server stores ciphertext and signed key envelopes, not plaintext DEKs.
 
 ## Dashboard
-
-Start it with:
 
 ```bash
 memory-vault-dashboard
 ```
 
-Open:
+Open [http://localhost:3080](http://localhost:3080). The Operations view shows workflow approvals, memory review, event traces, Outbox retries, dead letters, redactions, and approved Policy counts.
 
-[http://localhost:3080](http://localhost:3080)
+The Dashboard binds to `127.0.0.1` by default and rejects non-loopback hosts because it contains human approval actions. Remote access must use an authenticated reverse proxy.
 
-## CLI
+## Automatic Capture
 
-### Core
-
-```bash
-memory-vault-cli add "I prefer TypeScript" -t preference --tags "typescript,style"
-memory-vault-cli search "TypeScript"
-memory-vault-cli list
-memory-vault-cli get <id>
-memory-vault-cli delete <id>
-memory-vault-cli export
-memory-vault-cli export -f markdown
-```
-
-### Organization
+Claude Code can use [`scripts/session-end-hook.sh`](scripts/session-end-hook.sh) from `~/.claude/settings.json`. Codex sessions can be imported opportunistically with:
 
 ```bash
-memory-vault-cli organize
-memory-vault-cli organize --auto
-memory-vault-cli synthesize --hours 24
-memory-vault-cli synthesize --hours 24 --dry-run
+memory-vault-cli sweep-codex
 ```
 
-`organize` focuses on health stats and safe cleanup. `synthesize` scans recent memories for untagged entries, duplicates, contradictions, and low-value items.
+Generic MCP clients have no universal session-end lifecycle guarantee. For business-critical tasks, use the Workflow Gateway or AgentTeams example rather than relying on model instructions.
 
-### Extraction
+## Personal Encryption and Supabase Sync
 
-```bash
-memory-vault-cli extract -f path/to/transcript.jsonl
-cat notes.txt | memory-vault-cli extract
-```
-
-This command prints an extraction prompt for an MCP-capable model to execute.
-
-### Auth and Sync
+`MEMORYVAULT_PASSPHRASE` enables AES-256-GCM encryption for personal memories. Team spaces use independent versioned space keys. Optional Supabase setup remains available for personal cross-device sync:
 
 ```bash
 memory-vault-cli setup
 memory-vault-cli auth login
-memory-vault-cli auth status
-memory-vault-cli auth logout
 memory-vault-cli sync
-memory-vault-cli sync --status
 ```
 
-## Scheduled Synthesis
+Run [`scripts/setup-supabase.sql`](scripts/setup-supabase.sql) first. For OTP emails, configure Supabase `Authentication -> Email Templates -> Magic Link` with `{{ .Token }}`.
 
-The repo includes:
-
-`scripts/synthesize-cron.sh`
-
-It runs:
+## Verification
 
 ```bash
-memory-vault-cli synthesize --hours 24
+pnpm build
+pnpm test
+pnpm validate:agentteams
 ```
 
-Use it from `cron` or `launchd` for periodic cleanup/review.
-
-## MCP Capabilities
-
-### Tools (11)
-
-| Tool | Description |
-|------|-------------|
-| `memory_write` | Write a memory with semantic conflict detection |
-| `memory_search` | Semantic search across memories |
-| `memory_list` | List active memories |
-| `memory_delete` | Permanently delete a memory |
-| `memory_update` | Update a memory with version history |
-| `memory_export` | Export all memories as JSON |
-| `memory_export_markdown` | Export all memories as Markdown |
-| `memory_forget` | Soft-delete a memory with reason |
-| `memory_consolidate` | Merge multiple memories into one |
-| `memory_versions` | Show version history |
-| `memory_dream` | Run the full dream/organization cycle |
-
-### Resources (2)
-
-| Resource | Description |
-|----------|-------------|
-| `memoryvault://context/summary` | Summary of identity, preferences, projects, and rules |
-| `memoryvault://project/{name}` | Project-scoped memory view |
-
-### Prompts (3)
-
-| Prompt | Description |
-|--------|-------------|
-| `memory_extract` | Extract long-term memories from a conversation |
-| `memory_review` | Review recent memories |
-| `memory_organize` | Four-phase memory organization prompt |
-
-## How Clients Use It
-
-The MCP server instructs connected models to:
-
-- call `memory_search` at session start
-- silently apply retrieved preferences and project context
-- proactively write identity/preferences/rules/project decisions
-- check for duplicates before writing
-- avoid telling the user that memory was saved
-
-Whether a client actually does this depends on the client and model honoring the MCP instructions.
+The suite covers migrations, vec0 writes, conflict isolation, governance, Outbox retry/dead-letter recovery, HTTP MCP handshake, workflow replay, human rollback, E2EE invitations, key rotation, RBAC, sync tombstones, Dashboard APIs, and the Hospital A end-to-end scenario.
 
 ## License
 
