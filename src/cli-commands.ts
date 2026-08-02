@@ -15,6 +15,7 @@ import { retryPendingTeamMemoryPushes } from './space-sync.js';
 import { startSpaceServer } from './space-server.js';
 
 const DB_PATH = getMemoryDbPath();
+export const EXTRACT_MAX_CHARS = 50000;
 
 let _store: MemoryStore | null = null;
 function getStore(): MemoryStore {
@@ -415,17 +416,21 @@ export async function extractMemories(opts: { file?: string; transcript?: boolea
     process.exit(1);
   }
 
-  // Truncate very long conversations to avoid token limits
-  const MAX_CHARS = 50000;
-  if (conversation.length > MAX_CHARS) {
-    conversation = conversation.slice(-MAX_CHARS);
+  const prompt = buildExtractionPrompt(conversation, opts.projectKey);
+
+  console.log(prompt);
+}
+
+export function buildExtractionPrompt(conversation: string, projectKey?: string): string {
+  if (conversation.length > EXTRACT_MAX_CHARS) {
+    conversation = conversation.slice(-EXTRACT_MAX_CHARS);
   }
 
-  const projectInstruction = opts.projectKey
-    ? `- project: The project field must use this exact value: ${opts.projectKey}`
+  const projectInstruction = projectKey
+    ? `- project: The project field must use this exact value: ${projectKey}`
     : '- project: Project name if related to a specific project';
 
-  const prompt = `You are a memory extraction engine. Analyze the following conversation between a user and an AI, and extract information worth remembering long-term.
+  return `You are a memory extraction engine. Analyze the following conversation between a user and an AI, and extract information worth remembering long-term.
 
 Extraction rules:
 1. Only extract information that has "cross-session value" — ignore one-off questions
@@ -449,8 +454,6 @@ If there is nothing worth remembering, say "No memories to extract."
 Conversation:
 
 ${conversation}`;
-
-  console.log(prompt);
 }
 
 export function migrateProjects(opts: { map?: string; dryRun?: boolean }) {

@@ -34,6 +34,14 @@ describe('Database migration', () => {
     expect(tables).toHaveLength(1);
   });
 
+  it('should create sweep_state table', () => {
+    const db = createDatabase(TEST_DB);
+    const tables = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='sweep_state'"
+    ).all();
+    expect(tables).toHaveLength(1);
+  });
+
   it('should add scope columns with personal defaults', () => {
     const db = createDatabase(TEST_DB);
     const columns = db.pragma('table_info(memories)') as { name: string }[];

@@ -127,6 +127,13 @@ export function createDatabase(dbPath: string): Database.Database {
     )
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS sweep_state (
+      source TEXT PRIMARY KEY,
+      watermark TEXT NOT NULL
+    )
+  `);
+
   // Migration: add is_encrypted to memory_versions
   const versionColumns = db.pragma('table_info(memory_versions)') as { name: string }[];
   if (!versionColumns.some(c => c.name === 'is_encrypted')) {
@@ -135,6 +142,19 @@ export function createDatabase(dbPath: string): Database.Database {
 
   _db = db;
   return db;
+}
+
+export function getSweepWatermark(source: string): string | null {
+  const row = getDatabase().prepare('SELECT watermark FROM sweep_state WHERE source = ?').get(source) as { watermark: string } | undefined;
+  return row?.watermark ?? null;
+}
+
+export function setSweepWatermark(source: string, watermark: string): void {
+  getDatabase().prepare(`
+    INSERT INTO sweep_state (source, watermark)
+    VALUES (?, ?)
+    ON CONFLICT(source) DO UPDATE SET watermark = excluded.watermark
+  `).run(source, watermark);
 }
 
 export function recordEvent(input: {

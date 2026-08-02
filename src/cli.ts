@@ -26,6 +26,7 @@ import {
   serveSpaceCommand,
 } from './cli-commands.js';
 import { deriveProjectKey } from './project-key.js';
+import { sweepCodex } from './codex-sweep.js';
 
 const program = new Command();
 
@@ -120,6 +121,16 @@ program
   .option('--transcript', 'Force treating input as JSONL transcript format')
   .option('--project-key <projectKey>', 'Use a canonical project key for extracted memories')
   .action(extractMemories);
+
+program
+  .command('sweep-codex')
+  .description('Opportunistically extract memories from Codex CLI rollout sessions')
+  .option('--codex-home <dir>', 'Codex home directory (default: ~/.codex)')
+  .option('--dry-run', 'List candidate rollout files without extracting')
+  .option('--limit <limit>', 'Max sessions to process (default: 20)')
+  .action(async opts => {
+    await sweepCodex(opts);
+  });
 
 program
   .command('migrate-projects')

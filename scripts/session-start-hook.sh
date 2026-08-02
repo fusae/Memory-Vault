@@ -31,4 +31,6 @@ except Exception:
     pass
 PY
 
+nohup memory-vault-cli sweep-codex --limit 3 >/dev/null 2>&1 &
+
 exit 0

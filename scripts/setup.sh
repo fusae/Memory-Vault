@@ -120,7 +120,7 @@ else
 fi
 
 # ─── Step 5: Claude Code Hooks ───
-header "Claude Code Hooks" "Inject recall context at session start and extract memories at session end"
+header "Claude Code Hooks" "Inject recall context, sweep Codex sessions opportunistically, and extract memories at session end"
 
 SESSION_START_HOOK="$SCRIPT_DIR/session-start-hook.sh"
 SESSION_END_HOOK="$SCRIPT_DIR/session-end-hook.sh"
