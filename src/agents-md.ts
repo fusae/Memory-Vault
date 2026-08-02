@@ -47,14 +47,39 @@ function redactContext(output: string): string {
     .trimEnd();
 }
 
-function replaceManagedBlock(existing: string, block: string): string {
-  const begin = existing.indexOf(BEGIN_MARKER);
-  const end = existing.indexOf(END_MARKER, begin + BEGIN_MARKER.length);
-  if (begin >= 0 && end >= 0) {
-    return existing.slice(0, begin) + block + existing.slice(end + END_MARKER.length);
+type ReplaceManagedBlockResult =
+  | { skipped: false; content: string }
+  | { skipped: true; reason: 'skipped_malformed' };
+
+function markerPositions(existing: string, marker: string): number[] {
+  const positions: number[] = [];
+  let offset = 0;
+  while (offset <= existing.length) {
+    const pos = existing.indexOf(marker, offset);
+    if (pos < 0) break;
+    positions.push(pos);
+    offset = pos + marker.length;
   }
+  return positions;
+}
+
+function replaceManagedBlock(existing: string, block: string): ReplaceManagedBlockResult {
+  const begins = markerPositions(existing, BEGIN_MARKER);
+  const ends = markerPositions(existing, END_MARKER);
+
+  if (begins.length === 1 && ends.length === 1 && begins[0] < ends[0]) {
+    return {
+      skipped: false,
+      content: existing.slice(0, begins[0]) + block + existing.slice(ends[0] + END_MARKER.length),
+    };
+  }
+
+  if (begins.length > 0 || ends.length > 0) {
+    return { skipped: true, reason: 'skipped_malformed' };
+  }
+
   const separator = existing.length > 0 && !existing.endsWith('\n') ? '\n\n' : existing.length > 0 ? '\n' : '';
-  return existing + separator + block;
+  return { skipped: false, content: existing + separator + block };
 }
 
 export async function refreshAgentsMd(
@@ -62,14 +87,35 @@ export async function refreshAgentsMd(
   registration: ProjectRegistration,
   opts: { redact?: boolean } = {}
 ): Promise<void> {
+  const filePath = path.resolve(registration.agents_md_path);
+  const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : '';
+  const initialCheck = replaceManagedBlock(existing, '');
+  if (initialCheck.skipped) {
+    recordEvent({
+      event_type: 'sync',
+      project_key: registration.project_key,
+      source_tool: 'sync-agents-md',
+      detail: `${path.basename(filePath)} ${initialCheck.reason}`,
+    });
+    return;
+  }
+
   const output = await buildRecallContext(store, { project: registration.project_key, format: 'context', sourceTool: 'sync-agents-md' });
   const context = opts.redact ? redactContext(output) : output;
   const block = `${BEGIN_MARKER}\n${context}\n${END_MARKER}`;
-  const filePath = path.resolve(registration.agents_md_path);
-  const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf-8') : '';
   const next = replaceManagedBlock(existing, block);
+  if (next.skipped) {
+    recordEvent({
+      event_type: 'sync',
+      project_key: registration.project_key,
+      source_tool: 'sync-agents-md',
+      detail: `${path.basename(filePath)} ${next.reason}`,
+    });
+    return;
+  }
+
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, next, 'utf-8');
+  fs.writeFileSync(filePath, next.content, 'utf-8');
 
   const now = new Date().toISOString();
   getDatabase().prepare('UPDATE projects SET updated_at = ? WHERE project_key = ?').run(now, registration.project_key);
